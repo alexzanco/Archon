@@ -43,6 +43,8 @@ interface RawWorkflowRun {
   conversation_id?: string | null;
   /** Platform-level conversation id — exposed on the getRun response only. */
   conversation_platform_id?: string | null;
+  /** Web workflow runs use a worker conversation for node logs/messages. */
+  worker_platform_id?: string | null;
   status: string;
   started_at: string;
   completed_at?: string | null;
@@ -114,7 +116,7 @@ export function toRun(raw: RawWorkflowRun): Run {
     projectName: raw.codebase_name ?? null,
     costUsd: readCost(raw.metadata),
     conversationId: raw.conversation_id ?? null,
-    conversationPlatformId: raw.conversation_platform_id ?? null,
+    conversationPlatformId: raw.worker_platform_id ?? raw.conversation_platform_id ?? null,
     workflow: raw.workflow_name,
     origin: normalizeOrigin(raw.platform_type),
     status: normalizeStatus(raw.status),

@@ -95,3 +95,11 @@ export {
   resolveCopilotBinaryPath,
   fileExists as copilotFileExists,
 } from './community/copilot/binary-resolver';
+export {
+  AgyProvider,
+  AGY_CAPABILITIES,
+  parseAgyConfig,
+  registerAgyProvider,
+  type AgyProviderDefaults,
+} from './community/agy';
+export { resolveAgyBinaryPath } from './community/agy/binary-resolver';

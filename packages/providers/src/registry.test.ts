@@ -14,6 +14,7 @@ import {
 import { registerPiProvider } from './community/pi/registration';
 import { registerCopilotProvider } from './community/copilot/registration';
 import { registerOpencodeProvider } from './community/opencode/registration';
+import { registerAgyProvider } from './community/agy/registration';
 import { UnknownProviderError } from './errors';
 import type { ProviderRegistration, IAgentProvider, ProviderCapabilities } from './types';
 
@@ -259,6 +260,7 @@ describe('registry', () => {
       expect(isRegisteredProvider('opencode')).toBe(true);
       expect(isRegisteredProvider('pi')).toBe(true);
       expect(isRegisteredProvider('copilot')).toBe(true);
+      expect(isRegisteredProvider('agy')).toBe(true);
     });
 
     test('is idempotent', () => {
@@ -267,9 +269,11 @@ describe('registry', () => {
       const opencodeCount = getRegisteredProviders().filter(p => p.id === 'opencode').length;
       const piCount = getRegisteredProviders().filter(p => p.id === 'pi').length;
       const copilotCount = getRegisteredProviders().filter(p => p.id === 'copilot').length;
+      const agyCount = getRegisteredProviders().filter(p => p.id === 'agy').length;
       expect(opencodeCount).toBe(1);
       expect(piCount).toBe(1);
       expect(copilotCount).toBe(1);
+      expect(agyCount).toBe(1);
     });
   });
 
@@ -424,6 +428,55 @@ describe('registry', () => {
         .map(p => p.id)
         .sort();
       expect(ids).toEqual(['claude', 'codex', 'copilot']);
+    });
+  });
+
+  describe('registerAgyProvider (community provider)', () => {
+    test('registers agy with builtIn: false', () => {
+      registerAgyProvider();
+      const reg = getRegistration('agy');
+      expect(reg.id).toBe('agy');
+      expect(reg.displayName).toBe('AGY (Google Antigravity)');
+      expect(reg.builtIn).toBe(false);
+      expect(reg.credentials).toEqual({ kind: 'dynamic' });
+    });
+
+    test('is idempotent', () => {
+      registerAgyProvider();
+      expect(() => registerAgyProvider()).not.toThrow();
+      const entries = getRegisteredProviders().filter(p => p.id === 'agy');
+      expect(entries).toHaveLength(1);
+    });
+
+    test('declares minimal CLI bridge capabilities', () => {
+      registerAgyProvider();
+      const caps = getProviderCapabilities('agy');
+      expect(caps.sessionResume).toBe(false);
+      expect(caps.envInjection).toBe(true);
+      expect(caps.mcp).toBe(false);
+      expect(caps.hooks).toBe(false);
+      expect(caps.skills).toBe(false);
+      expect(caps.toolRestrictions).toBe(false);
+      expect(caps.structuredOutput).toBe('best-effort');
+      expect(caps.agents).toBe(false);
+      expect(caps.fallbackModel).toBe(false);
+      expect(caps.sandbox).toBe(true);
+      expect(caps.nativeTools).toBe(false);
+    });
+
+    test('appears in getProviderInfoList with builtIn: false', () => {
+      registerAgyProvider();
+      const info = getProviderInfoList().find(p => p.id === 'agy');
+      expect(info).toBeDefined();
+      expect(info?.builtIn).toBe(false);
+    });
+
+    test('does not collide with built-ins', () => {
+      registerAgyProvider();
+      const ids = getRegisteredProviders()
+        .map(p => p.id)
+        .sort();
+      expect(ids).toEqual(['agy', 'claude', 'codex']);
     });
   });
 });

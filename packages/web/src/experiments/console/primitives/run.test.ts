@@ -65,6 +65,19 @@ describe('toRun — provenance', () => {
     expect(r.conversationPlatformId).toBe('cli-detail-789');
   });
 
+  test('web run detail uses worker platform id for run messages', () => {
+    const r = toRun(
+      raw({
+        id: 'r1',
+        workflow_name: 'plan',
+        status: 'completed',
+        conversation_platform_id: null,
+        worker_platform_id: 'web-worker-detail-123',
+      })
+    );
+    expect(r.conversationPlatformId).toBe('web-worker-detail-123');
+  });
+
   test("normalizes the transient 'pending' status to running", () => {
     const r = toRun(raw({ id: 'r1', workflow_name: 'plan', status: 'pending' }));
     expect(r.status).toBe('running');
