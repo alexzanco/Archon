@@ -340,6 +340,19 @@ export class WorkflowEventBridge {
         // Fan-out to dashboard stream — no-op when no dashboard client connected
         this.transport.emitWorkflowEvent('__dashboard__', sseEvent);
       }
+      // Flush worker conversation buffers on step transitions so the run detail
+      // page can refetch the assistant text immediately after node completion.
+      // The parent bridge path below does the same for bridged workflow output.
+      if (
+        conversationId &&
+        this.onStepTransition &&
+        (event.type === 'loop_iteration_completed' ||
+          event.type === 'loop_iteration_failed' ||
+          event.type === 'node_completed' ||
+          event.type === 'node_failed')
+      ) {
+        this.onStepTransition(conversationId);
+      }
     });
   }
 

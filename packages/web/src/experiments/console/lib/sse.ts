@@ -86,7 +86,8 @@ export function useDashboardSSE(): void {
  *   text                  — new assistant text → messages changed
  *   tool_call/tool_result — new tool activity  → messages + run events changed
  *   workflow_status       — run status changed
- *   workflow_tool_activity / dag_node — workflow_events table grew
+ *   workflow_tool_activity / dag_node — workflow_events table grew; node
+ *                         transitions can also flush buffered assistant text
  */
 export function useRunStreamSSE(conversationPlatformId: string | null, runId: string | null): void {
   useEffect(() => {
@@ -138,6 +139,7 @@ export function useRunStreamSSE(conversationPlatformId: string | null, runId: st
         case 'workflow_artifact':
         case 'workflow_dispatch':
           runDirty = true;
+          messagesDirty = true;
           break;
         // Other event types (system_status, retract, etc.) don't change
         // persisted state we render — ignore.
