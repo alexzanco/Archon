@@ -177,6 +177,22 @@ describe('validateWorkflowResources — command nodes', () => {
   });
 });
 
+describe('validateWorkflowResources — loop commands', () => {
+  test('error for invalid loop command name', async () => {
+    const workflow = makeWorkflow('test', [
+      {
+        id: 'step1',
+        loop: { command: '../escape', until: 'DONE', max_iterations: 3 },
+      } as DagNode,
+    ]);
+    const issues = await validateWorkflowResources(workflow, tmpDir);
+    const errors = issues.filter(i => i.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].field).toBe('loop.command');
+    expect(errors[0].message).toContain('Invalid command name');
+  });
+});
+
 // =============================================================================
 // validateWorkflowResources — portable model refs
 // =============================================================================

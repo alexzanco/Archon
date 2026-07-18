@@ -203,7 +203,7 @@ function validateDagStructure(nodes: DagNode[]): string | null {
     if ('prompt' in node && typeof node.prompt === 'string') {
       sources.push(stripMarkdownCode(node.prompt));
     }
-    if (isLoopNode(node)) {
+    if (isLoopNode(node) && node.loop.prompt) {
       sources.push(stripMarkdownCode(node.loop.prompt));
     }
     for (const source of sources) {

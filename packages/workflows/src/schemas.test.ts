@@ -278,6 +278,54 @@ describe('dagNodeSchema — empty bash/prompt', () => {
   });
 });
 
+describe('dagNodeSchema — loop completion and prompt sources', () => {
+  const baseLoop = { max_iterations: 3, until: 'DONE' };
+
+  test('accepts a loop with command instead of prompt', () => {
+    expect(
+      dagNodeSchema.safeParse({
+        id: 'loop',
+        loop: { ...baseLoop, command: 'review' },
+      }).success
+    ).toBe(true);
+  });
+
+  test('rejects a loop with both prompt and command', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'loop',
+      loop: { ...baseLoop, prompt: 'Review it', command: 'review' },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some(issue => issue.message.includes('exactly one'))).toBe(true);
+  });
+
+  test('rejects a loop with neither prompt nor command', () => {
+    const result = dagNodeSchema.safeParse({ id: 'loop', loop: baseLoop });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some(issue => issue.message.includes('exactly one'))).toBe(true);
+  });
+
+  test('rejects a loop with no completion condition', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'loop',
+      loop: { prompt: 'Review it', max_iterations: 3 },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some(issue => issue.message.includes('completion condition'))).toBe(
+      true
+    );
+  });
+
+  test('accepts a loop with until_bash as its only completion condition', () => {
+    expect(
+      dagNodeSchema.safeParse({
+        id: 'loop',
+        loop: { prompt: 'Review it', max_iterations: 3, until_bash: 'exit 0' },
+      }).success
+    ).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // dagNodeSchema — Claude SDK options
 // ---------------------------------------------------------------------------

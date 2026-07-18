@@ -3867,6 +3867,117 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
   // ─── Loop Node Tests ─────────────────────────────────────────────────────
 
   describe('loop node execution', () => {
+    it('loads a loop command once and uses its content as the prompt', async () => {
+      await writeFile(
+        join(testDir, '.archon', 'commands', 'loop-command.md'),
+        'Command prompt $ARGUMENTS'
+      );
+      let capturedPrompt = '';
+      mockSendQueryDag.mockImplementation(function* (prompt: string) {
+        capturedPrompt = prompt;
+        yield { type: 'assistant', content: 'Finished <promise>COMPLETE</promise>' };
+        yield { type: 'result', sessionId: 'loop-command-session' };
+      });
+
+      await executeDagWorkflow(
+        createMockDeps(),
+        createMockPlatform(),
+        'conv-loop-command',
+        testDir,
+        {
+          name: 'dag-loop-command',
+          nodes: [
+            {
+              id: 'my-loop',
+              loop: { command: 'loop-command', until: 'COMPLETE', max_iterations: 3 },
+            },
+          ],
+        },
+        makeWorkflowRun(),
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(capturedPrompt).toBe('Command prompt dag test message');
+      expect(mockSendQueryDag.mock.calls.length).toBe(1);
+    });
+
+    it('fails the loop node when its command file is missing', async () => {
+      const mockDeps = createMockDeps();
+      await executeDagWorkflow(
+        mockDeps,
+        createMockPlatform(),
+        'conv-loop-command-missing',
+        testDir,
+        {
+          name: 'dag-loop-command-missing',
+          nodes: [
+            {
+              id: 'my-loop',
+              loop: { command: 'missing-loop-command', until: 'COMPLETE', max_iterations: 3 },
+            },
+          ],
+        },
+        makeWorkflowRun(),
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag.mock.calls.length).toBe(0);
+      expect(
+        (mockDeps.store.failWorkflowRun as Mock<(id: string, error: string) => Promise<void>>).mock
+          .calls
+      ).toHaveLength(1);
+    });
+
+    it('uses until_bash exclusively when until is omitted', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield { type: 'assistant', content: 'COMPLETE and any other output string' };
+        yield { type: 'result', sessionId: 'loop-bash-only-session' };
+      });
+
+      await executeDagWorkflow(
+        createMockDeps(),
+        createMockPlatform(),
+        'conv-loop-bash-only',
+        testDir,
+        {
+          name: 'dag-loop-bash-only',
+          nodes: [
+            {
+              id: 'my-loop',
+              loop: {
+                prompt: 'Do the work',
+                until_bash:
+                  'if [ -f .until-bash-marker ]; then exit 0; else touch .until-bash-marker; exit 1; fi',
+                max_iterations: 3,
+              },
+            },
+          ],
+        },
+        makeWorkflowRun(),
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag.mock.calls.length).toBe(2);
+    });
+
     it('completes on <promise>COMPLETE</promise> signal in first iteration', async () => {
       mockSendQueryDag.mockImplementation(function* () {
         yield { type: 'assistant', content: 'Did the task. <promise>COMPLETE</promise>' };

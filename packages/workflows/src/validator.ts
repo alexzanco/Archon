@@ -412,6 +412,16 @@ export async function validateWorkflowResources(
       }
     }
 
+    if (isLoopNode(node) && node.loop.command && !isValidCommandName(node.loop.command)) {
+      issues.push({
+        level: 'error',
+        nodeId: node.id,
+        field: 'loop.command',
+        message: `Invalid command name '${node.loop.command}' — must not contain '/', '\\', '..', or start with '.'`,
+        hint: 'Use a simple name like "my-command" (without path separators or the .md extension)',
+      });
+    }
+
     // --- MCP nodes: check config file exists and is valid JSON ---
     if ('mcp' in node && typeof node.mcp === 'string') {
       const mcpPath = isAbsolute(node.mcp) ? node.mcp : resolve(cwd, node.mcp);

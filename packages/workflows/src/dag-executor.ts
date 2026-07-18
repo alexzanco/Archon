@@ -2222,10 +2222,24 @@ async function executeLoopNode(
   docsDir: string,
   nodeOutputs: Map<string, NodeOutput>,
   config: WorkflowConfig,
+  configuredCommandFolder?: string,
   issueContext?: string
 ): Promise<NodeExecutionResult> {
   const loop = node.loop;
   const msgContext = { workflowId: workflowRun.id, nodeName: node.id };
+
+  let rawPrompt: string;
+  if (loop.command !== undefined) {
+    const promptResult = await loadCommandPrompt(deps, cwd, loop.command, configuredCommandFolder);
+    if (!promptResult.success) {
+      const errorMsg = promptResult.message;
+      getLog().error({ nodeId: node.id, error: errorMsg }, 'loop_node_command_load_failed');
+      return { state: 'failed', output: '', error: errorMsg };
+    }
+    rawPrompt = promptResult.content;
+  } else {
+    rawPrompt = loop.prompt ?? '';
+  }
 
   // Resolve AI client — fail fast with descriptive error
   let aiClient: ReturnType<typeof deps.getAgentProvider>;
@@ -2324,7 +2338,7 @@ async function executeLoopNode(
       // executor starts a fresh `lastIterationOutput` variable, so the first iteration of
       // the resume also receives an empty $LOOP_PREV_OUTPUT.
       const { prompt: substitutedPrompt } = substituteWorkflowVariables(
-        loop.prompt,
+        rawPrompt,
         workflowRun.id,
         workflowRun.user_message,
         artifactsDir,
@@ -2614,7 +2628,7 @@ async function executeLoopNode(
     // Check LLM completion signal — the AI decides whether the user approved.
     // For interactive loops, the AI emits the signal when the user explicitly approves
     // (e.g., "approved", "looks good"). The prompt instructs the AI on when to emit it.
-    const signalDetected = detectCompletionSignal(fullOutput, loop.until);
+    const signalDetected = loop.until ? detectCompletionSignal(fullOutput, loop.until) : false;
 
     // Check deterministic bash condition (if configured)
     let bashComplete = false;
@@ -3379,6 +3393,7 @@ export async function executeDagWorkflow(
               docsDir,
               nodeOutputs,
               config,
+              configuredCommandFolder,
               issueContext
             );
             return { nodeId: node.id, output };
