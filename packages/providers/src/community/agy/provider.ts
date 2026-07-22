@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLogger } from '@archon/paths';
@@ -26,6 +26,30 @@ interface AgyRunOptions {
   dangerouslySkipPermissions: boolean;
   additionalDirectories: string[];
   transcriptToolEvents: boolean;
+  supervisor?: SupervisorSpec;
+}
+
+interface SupervisorSpec {
+  /** A policy assembled by the trusted staging CLI for this exact instance. */
+  policyPath?: string;
+  runId?: string;
+  stage?: string;
+  itemKey?: string;
+  externalId?: string;
+  packet?: string;
+  rwOutput?: string;
+  capabilities?: string[];
+  networkEnabled?: boolean;
+  failClosed: boolean;
+}
+
+export class OsJailUnavailableError extends Error {
+  readonly code = 'OS_JAIL_UNAVAILABLE';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OsJailUnavailableError';
+  }
 }
 
 interface AgyTranscriptCapture {
@@ -40,6 +64,13 @@ interface AgyExit {
 
 interface RunningAgyPrint {
   done: Promise<{ stdout: string; stderr: string }>;
+}
+
+interface WrappedAgy {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  cleanup?: () => void;
 }
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -68,8 +99,15 @@ export class AgyProvider implements IAgentProvider {
     const args = buildAgyArgs(runOptions, finalPrompt, transcriptCapture?.logFilePath);
 
     try {
-      getLog().debug({ cwd, hasModel: runOptions.model !== undefined }, 'agy.query_started');
-      const run = startAgyPrint(binaryPath, args, cwd, options);
+      getLog().debug(
+        {
+          cwd,
+          hasModel: runOptions.model !== undefined,
+          osJail: runOptions.supervisor !== undefined,
+        },
+        'agy.query_started'
+      );
+      const run = startAgyPrint(binaryPath, args, cwd, options, runOptions.supervisor);
       if (transcriptCapture) {
         try {
           for await (const chunk of tailAgyToolChunksFromLog(
@@ -139,6 +177,7 @@ function resolveRunOptions(
       booleanFromNode(nodeConfig?.transcript_tool_events) ??
       config.transcriptToolEvents ??
       true,
+    supervisor: resolveSupervisor(nodeConfig?.sandbox),
     additionalDirectories: [
       ...(config.additionalDirectories ?? []),
       ...stringArrayFromNode(nodeConfig?.additionalDirectories),
@@ -185,16 +224,19 @@ function startAgyPrint(
   binaryPath: string,
   args: string[],
   cwd: string,
-  options: SendQueryOptions | undefined
+  options: SendQueryOptions | undefined,
+  supervisor: SupervisorSpec | undefined
 ): RunningAgyPrint {
   const abortSignal = options?.abortSignal;
   if (abortSignal?.aborted) {
     throw new Error('AGY query aborted before start');
   }
 
-  const child = spawn(binaryPath, args, {
+  const environment = buildAgyEnv(options?.env);
+  const wrapped = wrapWithSupervisor(binaryPath, args, environment, supervisor);
+  const child = spawn(wrapped.command, wrapped.args, {
     cwd,
-    env: buildAgyEnv(options?.env),
+    env: wrapped.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -232,6 +274,7 @@ function startAgyPrint(
     return { stdout, stderr };
   })().finally(() => {
     abortSignal?.removeEventListener('abort', onAbort);
+    wrapped.cleanup?.();
   });
 
   done.catch(() => {
@@ -243,15 +286,69 @@ function startAgyPrint(
   return { done };
 }
 
+function wrapWithSupervisor(
+  binaryPath: string,
+  agyArgs: string[],
+  environment: Record<string, string>,
+  spec: SupervisorSpec | undefined
+): WrappedAgy {
+  if (!spec) return { command: binaryPath, args: agyArgs, env: environment };
+  const supervisorPath = process.env.ZANCO_SANDBOX_BIN ?? 'zanco-sandbox';
+  if (spec.failClosed && supervisorPath.includes('/') && !existsSync(supervisorPath)) {
+    throw new OsJailUnavailableError(`zanco-sandbox is unavailable: ${supervisorPath}`);
+  }
+  // The trusted stage CLI owns policy construction.  Keep Archon as a router:
+  // it receives the resolved per-instance path and prefixes the provider command.
+  if (spec.policyPath) {
+    return {
+      command: supervisorPath,
+      args: ['run', '--policy', spec.policyPath, '--', binaryPath, ...agyArgs],
+      env: environment,
+    };
+  }
+  const directory = mkdtempSync(join(tmpdir(), 'archon-zanco-policy-'));
+  const policyPath = join(directory, 'policy.json');
+  writeFileSync(
+    policyPath,
+    JSON.stringify({
+      run_id: spec.runId,
+      stage: spec.stage,
+      item_key: spec.itemKey,
+      external_id: spec.externalId,
+      packet: spec.packet,
+      rw_output: spec.rwOutput,
+      capabilities: spec.capabilities,
+      net: spec.networkEnabled,
+      fail_closed: spec.failClosed,
+      backend: 'prov.curate',
+    })
+  );
+  return {
+    command: supervisorPath,
+    args: ['run', '--policy', policyPath, '--', binaryPath, ...agyArgs],
+    env: environment,
+    cleanup: (): void => {
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
 function createTranscriptCapture(): AgyTranscriptCapture {
   const directory = mkdtempSync(join(tmpdir(), 'archon-agy-'));
   return { directory, logFilePath: join(directory, 'agy.log') };
 }
 
 function waitForExit(child: ReturnType<typeof spawn>): Promise<AgyExit> {
+  const eventedChild = child as unknown as {
+    once(event: 'error', listener: (error: Error) => void): void;
+    once(
+      event: 'close',
+      listener: (code: number | null, signal: NodeJS.Signals | null) => void
+    ): void;
+  };
   return new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
+    eventedChild.once('error', reject);
+    eventedChild.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
       resolve({ code, signal });
     });
   });
@@ -272,6 +369,39 @@ function resolveSandbox(rawSandbox: unknown, configSandbox: boolean | undefined)
     return true;
   }
   return configSandbox ?? false;
+}
+
+function resolveSupervisor(rawSandbox: unknown): SupervisorSpec | undefined {
+  if (!rawSandbox || typeof rawSandbox !== 'object') return undefined;
+  const sandbox = rawSandbox as Record<string, unknown>;
+  if (sandbox.os !== 'bwrap') return undefined;
+  const policyPath = stringFromNode(sandbox.policy_path);
+  if (policyPath) {
+    return { policyPath, failClosed: sandbox.fail_closed !== false };
+  }
+  const packet = stringFromNode(sandbox.packet);
+  const rwOutput = stringFromNode(sandbox.rw_output);
+  const runId = stringFromNode(sandbox.run_id);
+  const stage = stringFromNode(sandbox.stage);
+  const itemKey = stringFromNode(sandbox.item_key);
+  const externalId = stringFromNode(sandbox.external_id);
+  const capabilities = stringArrayFromNode(sandbox.capabilities);
+  if (!packet || !rwOutput || !runId || !stage || !itemKey || !externalId || !capabilities.length) {
+    throw new OsJailUnavailableError(
+      'sandbox.os=bwrap requires resolved packet, rw_output, run_id, stage, item_key, external_id, and capabilities'
+    );
+  }
+  return {
+    runId,
+    stage,
+    itemKey,
+    externalId,
+    packet,
+    rwOutput,
+    capabilities,
+    networkEnabled: sandbox.net === true,
+    failClosed: sandbox.fail_closed !== false,
+  };
 }
 
 function stringFromNode(value: unknown): string | undefined {

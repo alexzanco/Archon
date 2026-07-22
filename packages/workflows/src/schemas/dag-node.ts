@@ -77,6 +77,19 @@ export type ThinkingConfig = z.infer<typeof thinkingConfigSchema>;
  */
 export const sandboxSettingsSchema = z
   .object({
+    /** Explicit outer OS jail, independent of provider-native sandbox flags. */
+    os: z.literal('bwrap').optional(),
+    /** Fully resolved supervisor policy emitted by an upstream staging node. */
+    policy_path: z.string().min(1).optional(),
+    packet: z.string().min(1).optional(),
+    rw_output: z.string().min(1).optional(),
+    capabilities: z.array(z.string().min(1)).optional(),
+    run_id: z.string().min(1).optional(),
+    stage: z.string().min(1).optional(),
+    item_key: z.string().min(1).optional(),
+    external_id: z.string().min(1).optional(),
+    net: z.boolean().optional(),
+    fail_closed: z.boolean().optional(),
     enabled: z.boolean().optional(),
     autoAllowBashIfSandboxed: z.boolean().optional(),
     allowUnsandboxedCommands: z.boolean().optional(),
@@ -397,11 +410,11 @@ export const SCRIPT_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS;
 
 /**
  * AI-specific fields that are unsupported on loop nodes.
- * `model` and `provider` are excluded because the DAG executor resolves and
- * forwards them to each iteration's AI call (see dag-executor.ts:2602-2648).
+ * `model`, `provider`, `budget`, and `sandbox` are excluded because the DAG
+ * executor resolves and forwards them to each iteration's AI call.
  */
 export const LOOP_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS.filter(
-  f => f !== 'model' && f !== 'provider'
+  f => f !== 'model' && f !== 'provider' && f !== 'budget' && f !== 'sandbox'
 );
 
 // ---------------------------------------------------------------------------

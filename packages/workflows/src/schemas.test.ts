@@ -744,12 +744,14 @@ describe('SCRIPT_NODE_AI_FIELDS', () => {
 // ---------------------------------------------------------------------------
 
 describe('LOOP_NODE_AI_FIELDS', () => {
-  test('excludes model and provider (loop nodes support them)', () => {
+  test('excludes fields that loop nodes support', () => {
     expect(LOOP_NODE_AI_FIELDS).not.toContain('model');
     expect(LOOP_NODE_AI_FIELDS).not.toContain('provider');
+    expect(LOOP_NODE_AI_FIELDS).not.toContain('budget');
+    expect(LOOP_NODE_AI_FIELDS).not.toContain('sandbox');
   });
 
-  test('contains all other AI-specific fields from BASH_NODE_AI_FIELDS', () => {
+  test('contains other unsupported AI-specific fields from BASH_NODE_AI_FIELDS', () => {
     const expectedFields = [
       'context',
       'output_format',
@@ -764,7 +766,6 @@ describe('LOOP_NODE_AI_FIELDS', () => {
       'systemPrompt',
       'fallbackModel',
       'betas',
-      'sandbox',
     ];
     for (const field of expectedFields) {
       expect(LOOP_NODE_AI_FIELDS).toContain(field);

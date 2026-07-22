@@ -468,6 +468,32 @@ export function substituteNodeOutputRefs(
   );
 }
 
+/**
+ * Resolve upstream output references inside a provider sandbox object.  Sandbox
+ * configuration is normally opaque to the executor, but a supervisor policy
+ * path is an instance-specific dependency just like a prompt reference.  Keep
+ * this narrow and recursive so providers still receive their native sandbox
+ * shape unchanged apart from string substitutions.
+ */
+export function substituteSandboxOutputRefs(
+  sandbox: unknown,
+  nodeOutputs: Map<string, NodeOutput>
+): unknown {
+  if (typeof sandbox === 'string') return substituteNodeOutputRefs(sandbox, nodeOutputs);
+  if (Array.isArray(sandbox)) {
+    return sandbox.map(value => substituteSandboxOutputRefs(value, nodeOutputs));
+  }
+  if (sandbox && typeof sandbox === 'object') {
+    return Object.fromEntries(
+      Object.entries(sandbox).map(([key, value]) => [
+        key,
+        substituteSandboxOutputRefs(value, nodeOutputs),
+      ])
+    );
+  }
+  return sandbox;
+}
+
 // buildSDKHooksFromYAML moved to @archon/providers/src/claude/provider.ts
 // loadMcpConfig moved to @archon/providers/src/mcp/config.ts
 
@@ -908,8 +934,22 @@ async function executeNodeInternal(
   const nodeAbortController = new AbortController();
   // Fork when resuming — leaves the source session untouched so retries are safe.
   const shouldForkSession = resumeSessionId !== undefined;
+  // A staging node emits the supervisor policy for this precise fan-out item.
+  // Resolve only sandbox strings here, after all upstream outputs are available
+  // and immediately before the provider receives NodeConfig.
+  const resolvedNodeOptions: SendQueryOptions | undefined = nodeOptions
+    ? {
+        ...nodeOptions,
+        nodeConfig: nodeOptions.nodeConfig
+          ? {
+              ...nodeOptions.nodeConfig,
+              sandbox: substituteSandboxOutputRefs(nodeOptions.nodeConfig.sandbox, nodeOutputs),
+            }
+          : undefined,
+      }
+    : undefined;
   const nodeOptionsWithAbort: SendQueryOptions | undefined = {
-    ...nodeOptions,
+    ...resolvedNodeOptions,
     abortSignal: nodeAbortController.signal,
     ...(shouldForkSession ? { forkSession: true } : {}),
   };
@@ -2463,6 +2503,12 @@ async function executeLoopNode(
 
       const iterationOptions: SendQueryOptions | undefined = {
         ...resolvedOptions,
+        nodeConfig: resolvedOptions?.nodeConfig
+          ? {
+              ...resolvedOptions.nodeConfig,
+              sandbox: substituteSandboxOutputRefs(resolvedOptions.nodeConfig.sandbox, nodeOutputs),
+            }
+          : undefined,
         abortSignal: iterationAbortController.signal,
       };
 

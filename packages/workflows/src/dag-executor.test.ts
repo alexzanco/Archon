@@ -39,6 +39,7 @@ mock.module('@archon/paths', () => ({
 
 // --- Bootstrap provider registry (after path mocks, before dag-executor import) ---
 import { registerBuiltinProviders, registerPiProvider, clearRegistry } from '@archon/providers';
+import type { SendQueryOptions } from '@archon/providers';
 clearRegistry();
 registerBuiltinProviders();
 // Pi is a community provider (best-effort structured output) — register it so the
@@ -50,6 +51,7 @@ registerPiProvider();
 import {
   buildTopologicalLayers,
   checkTriggerRule,
+  substituteSandboxOutputRefs,
   substituteNodeOutputRefs,
   executeDagWorkflow,
   isProviderRefusal,
@@ -795,6 +797,30 @@ describe('substituteNodeOutputRefs', () => {
   it('schemaless JSON node missing a referenced key throws', () => {
     const outputs = new Map([['a', makeOutput('completed', '{"type":"BUG"}')]]);
     expect(() => substituteNodeOutputRefs('$a.output.missing', outputs)).toThrow(OutputRefError);
+  });
+});
+
+describe('substituteSandboxOutputRefs', () => {
+  it('resolves an upstream stage policy path without changing other sandbox fields', () => {
+    const outputs = new Map([
+      [
+        'stage-1',
+        makeOutput(
+          'completed',
+          JSON.stringify({ policyPath: '/run/user/1000/zanco/run-1/slot-1/policy.json' })
+        ),
+      ],
+    ]);
+    expect(
+      substituteSandboxOutputRefs(
+        { os: 'bwrap', policy_path: '$stage-1.output.policyPath', fail_closed: true },
+        outputs
+      )
+    ).toEqual({
+      os: 'bwrap',
+      policy_path: '/run/user/1000/zanco/run-1/slot-1/policy.json',
+      fail_closed: true,
+    });
   });
 });
 
@@ -3887,6 +3913,60 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
   // ─── Loop Node Tests ─────────────────────────────────────────────────────
 
   describe('loop node execution', () => {
+    it('passes a resolved upstream supervisor policy path to a loop provider call', async () => {
+      let capturedOptions: SendQueryOptions | undefined;
+      mockSendQueryDag.mockImplementation(function* (
+        _prompt: string,
+        _cwd: string,
+        _resume: string | undefined,
+        options: SendQueryOptions | undefined
+      ) {
+        capturedOptions = options;
+        yield { type: 'assistant', content: 'Finished <promise>COMPLETE</promise>' };
+        yield { type: 'result', sessionId: 'loop-policy-session' };
+      });
+
+      await executeDagWorkflow(
+        createMockDeps(),
+        createMockPlatform(),
+        'conv-loop-policy',
+        testDir,
+        {
+          name: 'dag-loop-policy',
+          nodes: [
+            {
+              id: 'stage-1',
+              bash: 'echo \'{"policyPath":"/runtime/stage-1/policy.json"}\'',
+            },
+            {
+              id: 'curate-1',
+              depends_on: ['stage-1'],
+              sandbox: {
+                os: 'bwrap',
+                policy_path: '$stage-1.output.policyPath',
+                fail_closed: true,
+              },
+              loop: { prompt: 'curate', until: 'COMPLETE', max_iterations: 1 },
+            },
+          ],
+        },
+        makeWorkflowRun(),
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(capturedOptions?.nodeConfig?.sandbox).toEqual({
+        os: 'bwrap',
+        policy_path: '/runtime/stage-1/policy.json',
+        fail_closed: true,
+      });
+    });
+
     it('loads a loop command once and uses its content as the prompt', async () => {
       await writeFile(
         join(testDir, '.archon', 'commands', 'loop-command.md'),
