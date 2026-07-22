@@ -324,6 +324,24 @@ describe('dagNodeSchema — loop completion and prompt sources', () => {
       }).success
     ).toBe(true);
   });
+
+  test('preserves node-level sandbox and model on a loop node (AI-only fields)', () => {
+    // Regression: the transform previously returned `{ ...base, loop }` for loop nodes,
+    // dropping `...aiOnly` — so node-level `sandbox` (the OS jail) and `model` were
+    // silently discarded and looped authors ran unconfined (2026-07-22 rehearsal).
+    const node = dagNodeSchema.parse({
+      id: 'curate-1',
+      model: 'Gemini 3.5 Flash (Medium)',
+      sandbox: { os: 'bwrap', policy_path: '$stage-1.output.policyPath', fail_closed: true },
+      loop: { command: 'curate-entity', max_iterations: 3, until_bash: 'exit 0' },
+    });
+    expect(node.sandbox).toEqual({
+      os: 'bwrap',
+      policy_path: '$stage-1.output.policyPath',
+      fail_closed: true,
+    });
+    expect(node.model).toBe('Gemini 3.5 Flash (Medium)');
+  });
 });
 
 // ---------------------------------------------------------------------------

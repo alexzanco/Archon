@@ -611,7 +611,8 @@ export const dagNodeSchema = dagNodeBaseSchema
       ...(data.retry !== undefined ? { retry: data.retry } : {}),
     };
 
-    // AI-only fields (not applicable to bash/loop nodes)
+    // AI-only fields for command/prompt nodes (the full set). Not applicable to
+    // bash/script nodes; loop nodes take only the supported subset (`loopAiSupported`).
     const aiOnly = {
       ...(data.model !== undefined ? { model: data.model } : {}),
       ...(data.provider !== undefined ? { provider: data.provider } : {}),
@@ -665,9 +666,19 @@ export const dagNodeSchema = dagNodeBaseSchema
     if (data.cancel !== undefined && data.cancel.trim().length > 0) {
       return { ...base, ...shared, cancel: data.cancel.trim() };
     }
-    // loop — guaranteed by superRefine to be defined at this point
+    // loop — guaranteed by superRefine to be defined at this point. Loop nodes support a
+    // subset of AI fields — model, provider, and sandbox — which the DAG executor forwards
+    // to each iteration's AI call (budget rides in `base`; see LOOP_NODE_AI_FIELDS). Other
+    // AI-only fields are intentionally not forwarded (the loader warns via ai_fields_ignored).
+    // Omitting `sandbox` here silently dropped the OS jail, so looped authors ran unconfined
+    // (2026-07-22 rehearsal: curate author unconfined despite sandbox: {os: bwrap}).
     if (!data.loop) throw new Error('unreachable: loop must be defined after superRefine');
-    return { ...base, loop: data.loop };
+    const loopAiSupported = {
+      ...(data.model !== undefined ? { model: data.model } : {}),
+      ...(data.provider !== undefined ? { provider: data.provider } : {}),
+      ...(data.sandbox !== undefined ? { sandbox: data.sandbox } : {}),
+    };
+    return { ...base, ...shared, ...loopAiSupported, loop: data.loop };
   })
   .openapi('DagNode');
 
