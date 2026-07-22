@@ -145,9 +145,10 @@ function extractLastAssistantText(messages: readonly unknown[]): string | undefi
 }
 
 /**
- * Build the terminal `result` chunk from the final `agent_end` event. Pulls
- * usage/stopReason/error from the last assistant message in the returned
- * transcript. When the agent ended in error, surfaces it as `isError: true`.
+ * Build the terminal `result` chunk from the final `agent_end` event. Usage is
+ * summed across every assistant turn in the prompt, while stop/error semantics
+ * come from the final turn. A multi-tool Pi turn sequence otherwise reports
+ * only its final request and materially undercounts node spend.
  */
 export function buildResultChunk(messages: readonly unknown[]): MessageChunk {
   const last = [...messages].reverse().find(isAssistantMessage);
@@ -160,7 +161,8 @@ export function buildResultChunk(messages: readonly unknown[]): MessageChunk {
     return { type: 'result', isError: true, errorSubtype: 'missing_assistant_message' };
   }
 
-  const tokens = usageToTokens(last.usage);
+  const assistantMessages = messages.filter(isAssistantMessage);
+  const tokens = sumAssistantUsage(assistantMessages);
   const isError = last.stopReason === 'error' || last.stopReason === 'aborted';
 
   const chunk: MessageChunk = {
@@ -168,6 +170,12 @@ export function buildResultChunk(messages: readonly unknown[]): MessageChunk {
     tokens,
     ...(tokens.cost !== undefined ? { cost: tokens.cost } : {}),
     ...(last.stopReason ? { stopReason: last.stopReason } : {}),
+    numTurns: assistantMessages.length,
+    modelUsage: {
+      assistant_turns: assistantMessages.length,
+      retry_events: messages.filter(m => messageTypeIs(m, 'auto_retry_start')).length,
+      compaction_events: messages.filter(m => messageTypeIs(m, 'compaction_start')).length,
+    },
     ...(isError
       ? {
           isError: true,
@@ -189,6 +197,31 @@ export function buildResultChunk(messages: readonly unknown[]): MessageChunk {
     );
   }
   return chunk;
+}
+
+function sumAssistantUsage(messages: readonly AssistantMessage[]): TokenUsage {
+  return messages.reduce<TokenUsage>(
+    (total, message) => {
+      const usage = usageToTokens(message.usage);
+      return {
+        input: total.input + usage.input,
+        output: total.output + usage.output,
+        ...(usage.total !== undefined || total.total !== undefined
+          ? { total: (total.total ?? 0) + (usage.total ?? 0) }
+          : {}),
+        ...(usage.cost !== undefined || total.cost !== undefined
+          ? { cost: (total.cost ?? 0) + (usage.cost ?? 0) }
+          : {}),
+      };
+    },
+    { input: 0, output: 0 }
+  );
+}
+
+function messageTypeIs(message: unknown, type: string): boolean {
+  return (
+    message !== null && typeof message === 'object' && (message as { type?: unknown }).type === type
+  );
 }
 
 // Structured-output parsing is shared across providers. Import once for local
@@ -271,9 +304,7 @@ export function mapPiEvent(event: AgentSessionEvent): MessageChunk[] {
  * independently without reaching into the generator's closure.
  */
 export type BridgeQueueItem =
-  | { kind: 'chunk'; chunk: MessageChunk }
-  | { kind: 'done' }
-  | { kind: 'error'; error: Error };
+  { kind: 'chunk'; chunk: MessageChunk } | { kind: 'done' } | { kind: 'error'; error: Error };
 
 /** Lets the UI stub push notifications into the session's chunk queue. */
 export interface BridgeNotifier {

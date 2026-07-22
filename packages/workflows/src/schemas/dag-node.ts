@@ -130,6 +130,21 @@ export const agentDefinitionSchema = z.object({
 
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
 
+/**
+ * Per-session spend fuse. This is deliberately a runtime budget rather than a
+ * provider cost option: it is enforced from the provider-neutral event stream.
+ */
+export const nodeBudgetSchema = z.object({
+  enforcement: z.enum(['report', 'enforce']).default('enforce'),
+  max_tool_calls: z.number().int().nonnegative().optional(),
+  max_tool_result_bytes: z.number().int().nonnegative().optional(),
+  max_single_tool_result_bytes: z.number().int().nonnegative().optional(),
+  max_wall_seconds: z.number().positive().finite().optional(),
+  forbidden_path_globs: z.array(z.string().min(1)).optional(),
+});
+
+export type NodeBudget = z.infer<typeof nodeBudgetSchema>;
+
 // Kebab-case: no leading/trailing/double hyphens (e.g. `brief-gen`, not `-brief`, `brief-`, `brief--gen`).
 const AGENT_ID_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
@@ -148,6 +163,7 @@ export const dagNodeBaseSchema = z.object({
   output_format: z.record(z.string(), z.unknown()).optional(),
   allowed_tools: z.array(z.string()).optional(),
   denied_tools: z.array(z.string()).optional(),
+  budget: nodeBudgetSchema.optional(),
   idle_timeout: z.number().optional(),
   retry: stepRetryConfigSchema.optional(),
   hooks: workflowNodeHooksSchema.optional(),
@@ -347,13 +363,7 @@ export type CancelNode = z.infer<typeof cancelNodeSchema> & {
 
 /** A single node in a DAG workflow. command, prompt, bash, loop, approval, cancel, and script are mutually exclusive. */
 export type DagNode =
-  | CommandNode
-  | PromptNode
-  | BashNode
-  | LoopNode
-  | ApprovalNode
-  | CancelNode
-  | ScriptNode;
+  CommandNode | PromptNode | BashNode | LoopNode | ApprovalNode | CancelNode | ScriptNode;
 
 // ---------------------------------------------------------------------------
 // AI-specific fields that are meaningless on non-AI nodes
@@ -367,6 +377,7 @@ export const BASH_NODE_AI_FIELDS: readonly string[] = [
   'output_format',
   'allowed_tools',
   'denied_tools',
+  'budget',
   'hooks',
   'mcp',
   'skills',
@@ -577,6 +588,7 @@ export const dagNodeSchema = dagNodeBaseSchema
       ...(data.when !== undefined ? { when: data.when } : {}),
       ...(data.trigger_rule !== undefined ? { trigger_rule: data.trigger_rule } : {}),
       ...(data.idle_timeout !== undefined ? { idle_timeout: data.idle_timeout } : {}),
+      ...(data.budget !== undefined ? { budget: data.budget } : {}),
       ...(data.always_run !== undefined ? { always_run: data.always_run } : {}),
       ...(data.output_type !== undefined ? { output_type: data.output_type } : {}),
     };
@@ -609,10 +621,10 @@ export const dagNodeSchema = dagNodeBaseSchema
     };
 
     if (data.command !== undefined && data.command.trim().length > 0) {
-      return { ...base, ...shared, ...aiOnly, command: data.command.trim() } as CommandNode;
+      return { ...base, ...shared, ...aiOnly, command: data.command.trim() };
     }
     if (data.prompt !== undefined && data.prompt.trim().length > 0) {
-      return { ...base, ...shared, ...aiOnly, prompt: data.prompt.trim() } as PromptNode;
+      return { ...base, ...shared, ...aiOnly, prompt: data.prompt.trim() };
     }
     if (data.bash !== undefined && data.bash.trim().length > 0) {
       return {
@@ -620,7 +632,7 @@ export const dagNodeSchema = dagNodeBaseSchema
         ...shared,
         bash: data.bash.trim(),
         ...(data.timeout !== undefined ? { timeout: data.timeout } : {}),
-      } as BashNode;
+      };
     }
     if (data.script !== undefined && data.script.trim().length > 0) {
       // runtime is guaranteed by superRefine to be defined at this point
@@ -632,17 +644,17 @@ export const dagNodeSchema = dagNodeBaseSchema
         runtime: data.runtime,
         ...(data.deps !== undefined ? { deps: data.deps } : {}),
         ...(data.timeout !== undefined ? { timeout: data.timeout } : {}),
-      } as ScriptNode;
+      };
     }
     if (data.approval !== undefined) {
-      return { ...base, ...shared, approval: data.approval } as ApprovalNode;
+      return { ...base, ...shared, approval: data.approval };
     }
     if (data.cancel !== undefined && data.cancel.trim().length > 0) {
-      return { ...base, ...shared, cancel: data.cancel.trim() } as CancelNode;
+      return { ...base, ...shared, cancel: data.cancel.trim() };
     }
     // loop — guaranteed by superRefine to be defined at this point
     if (!data.loop) throw new Error('unreachable: loop must be defined after superRefine');
-    return { ...base, loop: data.loop } as LoopNode;
+    return { ...base, loop: data.loop };
   })
   .openapi('DagNode');
 

@@ -460,6 +460,34 @@ describe('dagNodeSchema — new Claude SDK options', () => {
   });
 });
 
+describe('dagNodeSchema — budget fuse', () => {
+  test('accepts both enforcement modes and defaults to enforce', () => {
+    const defaulted = dagNodeSchema.parse({
+      id: 'budgeted',
+      prompt: 'do it',
+      budget: { max_tool_calls: 0 },
+    });
+    expect(defaulted.budget).toEqual({ enforcement: 'enforce', max_tool_calls: 0 });
+
+    const reportOnly = dagNodeSchema.parse({
+      id: 'observe',
+      prompt: 'do it',
+      budget: { enforcement: 'report', max_wall_seconds: 1 },
+    });
+    expect(reportOnly.budget?.enforcement).toBe('report');
+  });
+
+  test('rejects unknown enforcement and invalid ranges', () => {
+    expect(
+      dagNodeSchema.safeParse({
+        id: 'bad',
+        prompt: 'do it',
+        budget: { enforcement: 'warn', max_tool_calls: -1 },
+      }).success
+    ).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // isScriptNode
 // ---------------------------------------------------------------------------

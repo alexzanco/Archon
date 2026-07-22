@@ -450,15 +450,13 @@ export class PiProvider implements IAgentProvider {
           ? { ...(gv as Record<string, unknown>), ...(pv as Record<string, unknown>) }
           : pv;
     }
-    const settingsManager = piCodingAgent.SettingsManager.inMemory(
-      seedSettings as ReturnType<typeof fileSettings.getGlobalSettings>
-    );
-    // Default ON: extensions (community packages like @plannotator/pi-extension
-    // or your own local ones) are a core reason users run Pi. Opt out with
-    // `assistants.pi.enableExtensions: false` (or `interactive: false`) in
-    // `.archon/config.yaml`. Previously default-off, which silently broke
-    // users who installed or built an extension and expected it to fire.
-    const enableExtensions = piConfig.enableExtensions !== false;
+    const settingsManager = piCodingAgent.SettingsManager.inMemory(seedSettings);
+    // Budget-constrained workflow nodes must not discover ambient extensions:
+    // extensions can add unaccounted tools and UI flows. A future allowlisted
+    // extension loader can safely reopen this; today Pi only exposes global
+    // discovery, so failing closed is the only enforceable behavior.
+    const constrainedNode = nodeConfig?.budget !== undefined;
+    const enableExtensions = constrainedNode ? false : piConfig.enableExtensions !== false;
     // Clamp to false without extensions: nothing consumes hasUI without a runner.
     const interactive = enableExtensions && piConfig.interactive !== false;
 
@@ -488,6 +486,7 @@ export class PiProvider implements IAgentProvider {
         skillCount: skillPaths.length,
         missingSkillCount: missingSkills.length,
         extensionsEnabled: enableExtensions,
+        constrainedNode,
         interactive,
         resumed: resumeSessionId !== undefined && !resumeFailed,
       },

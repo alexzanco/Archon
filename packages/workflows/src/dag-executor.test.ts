@@ -52,6 +52,7 @@ import {
   checkTriggerRule,
   substituteNodeOutputRefs,
   executeDagWorkflow,
+  isProviderRefusal,
 } from './dag-executor';
 import { loadMcpConfig } from '@archon/providers/mcp/config';
 import type { DagNode, BashNode, ScriptNode, NodeOutput, WorkflowRun } from './schemas';
@@ -61,6 +62,25 @@ import { OutputRefError } from './output-ref';
 import type { WorkflowDeps, IWorkflowPlatform, WorkflowConfig } from './deps';
 import type { IWorkflowStore } from './store';
 import { buildAiProfile } from './model-validation';
+
+describe('isProviderRefusal', () => {
+  it('detects the observed AGY refusal message', () => {
+    const refusal =
+      'The prompt could not be submitted. The prompt contains sensitive words that violate ' +
+      "Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/" +
+      'generative-ai/use-policy). Try rephrasing the prompt.';
+
+    expect(isProviderRefusal(refusal)).toBe(true);
+  });
+
+  it('does not discard a long curation summary quoting the policy phrase', () => {
+    const summary = `Curation summary: Generative AI Prohibited Use policy was quoted by a source. ${'x'.repeat(
+      3000
+    )}`;
+
+    expect(isProviderRefusal(summary)).toBe(false);
+  });
+});
 
 // --- Mock helpers ---
 
@@ -4383,6 +4403,115 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
         (mockDeps.store.failWorkflowRun as Mock<(id: string, error: string) => Promise<void>>).mock
           .calls.length
       ).toBe(1);
+    });
+
+    it('does not charge a provider refusal against max_iterations', async () => {
+      let callCount = 0;
+      mockSendQueryDag.mockImplementation(function* () {
+        callCount++;
+        if (callCount === 1) {
+          yield {
+            type: 'assistant',
+            content:
+              'The prompt could not be submitted. The prompt contains sensitive words that violate ' +
+              "Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/" +
+              'generative-ai/use-policy). Try rephrasing the prompt.',
+          };
+        } else {
+          yield { type: 'assistant', content: 'Task finished. COMPLETE' };
+        }
+        yield { type: 'result', sessionId: `loop-session-${String(callCount)}` };
+      });
+
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun();
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'dag-loop-refusal-retry',
+          nodes: [
+            {
+              id: 'my-loop',
+              loop: {
+                prompt: 'Do task.',
+                until: 'COMPLETE',
+                max_iterations: 2,
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag.mock.calls.length).toBe(2);
+      expect(
+        (mockDeps.store.completeWorkflowRun as Mock<(id: string) => Promise<void>>).mock.calls
+          .length
+      ).toBe(1);
+    });
+
+    it('fails after three provider refusals without hanging', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield {
+          type: 'assistant',
+          content: 'The prompt could not be submitted. Try rephrasing the prompt.',
+        };
+        yield { type: 'result', sessionId: 'loop-session' };
+      });
+
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun();
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'dag-loop-persistent-refusal',
+          nodes: [
+            {
+              id: 'my-loop',
+              loop: {
+                prompt: 'Do task.',
+                until: 'COMPLETE',
+                max_iterations: 2,
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag.mock.calls.length).toBe(3);
+      const failCalls = (
+        mockDeps.store.failWorkflowRun as Mock<(id: string, error: string) => Promise<void>>
+      ).mock.calls;
+      expect(failCalls.length).toBe(1);
+      const messages = (
+        platform.sendMessage as Mock<(conversationId: string, message: string) => Promise<void>>
+      ).mock.calls.map(call => call[1]);
+      expect(messages.some(message => message.includes('provider refusals'))).toBe(true);
     });
 
     it('completes on final iteration with XML-wrapped signal (<COMPLETE>SIGNAL</COMPLETE>)', async () => {

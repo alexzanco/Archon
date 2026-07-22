@@ -1213,8 +1213,7 @@ describe('PiProvider', () => {
 
     // DefaultResourceLoader constructor received systemPrompt
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.systemPrompt).toBe('You are a careful investigator.');
     expect(loaderArgs?.noExtensions).toBe(false);
     expect(loaderArgs?.noContextFiles).toBe(true);
@@ -1232,8 +1231,7 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.systemPrompt).toBe('node-level prompt');
   });
 
@@ -1250,8 +1248,7 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.systemPrompt).toBe('request-level wins');
   });
 
@@ -1276,8 +1273,7 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.systemPrompt).toBeUndefined();
   });
 
@@ -1307,8 +1303,7 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     // Extensions (community packages and user-authored) are a core reason
     // users run Pi; off-by-default silently broke users who installed or
     // authored one and expected it to fire.
@@ -1332,8 +1327,7 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.noExtensions).toBe(false);
     // Skills/prompts/themes/context still suppressed — only extensions opt-in.
     expect(loaderArgs?.noSkills).toBe(true);
@@ -1354,9 +1348,26 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.noExtensions).toBe(true);
+  });
+
+  test('budget-constrained node runs with no ambient extensions', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: { enableExtensions: true, interactive: true },
+        nodeConfig: { budget: { max_tool_calls: 0 } },
+      })
+    );
+
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      Record<string, unknown> | undefined;
+    expect(loaderArgs?.noExtensions).toBe(true);
+    expect(mockBindExtensions).not.toHaveBeenCalled();
   });
 
   test('nodeConfig.skills with unknown name yields system warning, does not abort', async () => {
@@ -1378,8 +1389,7 @@ describe('PiProvider', () => {
 
     // DefaultResourceLoader instantiated without additionalSkillPaths (all missing)
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(loaderArgs?.additionalSkillPaths).toBeUndefined();
   });
 
@@ -1394,8 +1404,7 @@ describe('PiProvider', () => {
     );
 
     const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect('additionalSkillPaths' in (loaderArgs ?? {})).toBe(false);
   });
 

@@ -218,15 +218,24 @@ describe('buildResultChunk', () => {
     }
   });
 
-  test('prefers last assistant message when multiple present', () => {
+  test('sums usage across every assistant turn and records audit counters', () => {
     const olderUsage = { ...usage, input: 1, totalTokens: 1 };
     const chunk = buildResultChunk([
       { role: 'assistant', usage: olderUsage, stopReason: 'stop', content: [] },
+      { type: 'auto_retry_start' },
+      { type: 'compaction_start' },
       { role: 'user', content: [] },
       { role: 'assistant', usage, stopReason: 'stop', content: [] },
     ]);
     if (chunk.type === 'result') {
-      expect(chunk.tokens?.input).toBe(10);
+      expect(chunk.tokens?.input).toBe(11);
+      expect(chunk.tokens?.output).toBe(10);
+      expect(chunk.numTurns).toBe(2);
+      expect(chunk.modelUsage).toEqual({
+        assistant_turns: 2,
+        retry_events: 1,
+        compaction_events: 1,
+      });
     }
   });
 });

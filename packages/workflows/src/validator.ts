@@ -540,11 +540,11 @@ export async function validateWorkflowResources(
           ('denied_tools' in node && node.denied_tools !== undefined)
         ) {
           issues.push({
-            level: 'warning',
+            level: 'error',
             nodeId: node.id,
             field: 'allowed_tools/denied_tools',
-            message: `Tool restrictions are not supported by provider '${provider}' — this will be ignored`,
-            hint: 'Remove tool restriction fields or switch to a provider that supports them',
+            message: `Tool restrictions are not supported by provider '${provider}' and cannot be silently ignored`,
+            hint: 'Remove tool restriction fields or switch to a provider that enforces them',
           });
         }
       }

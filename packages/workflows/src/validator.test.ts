@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, writeFile, rm, symlink as fsSymlink } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { registerBuiltinProviders, clearRegistry } from '@archon/providers';
+import { registerAgyProvider, registerBuiltinProviders, clearRegistry } from '@archon/providers';
 
 // Bootstrap provider registry (needed by capability-driven warnings in validator)
 clearRegistry();
@@ -561,6 +561,21 @@ describe('validateWorkflowResources — agents capability', () => {
     const issues = await validateWorkflowResources(workflow, tmpDir);
     const warning = issues.find(i => i.level === 'warning' && i.field === 'agents');
     expect(warning).toBeUndefined();
+  });
+});
+
+describe('validateWorkflowResources — hard tool restrictions', () => {
+  test('fails closed when agy cannot enforce a declared restriction', async () => {
+    registerAgyProvider();
+    const workflow = makeWorkflow(
+      'test',
+      [{ id: 'step1', prompt: 'p', allowed_tools: [] } as unknown as DagNode],
+      'agy'
+    );
+    const issues = await validateWorkflowResources(workflow, tmpDir);
+    expect(issues).toContainEqual(
+      expect.objectContaining({ level: 'error', field: 'allowed_tools/denied_tools' })
+    );
   });
 });
 

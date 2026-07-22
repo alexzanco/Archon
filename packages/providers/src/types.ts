@@ -380,6 +380,8 @@ export interface NodeConfig {
   >;
   allowed_tools?: string[];
   denied_tools?: string[];
+  /** Provider-neutral spend fuse; evaluated by the workflow executor. */
+  budget?: unknown;
   effort?: string;
   thinking?: unknown;
   sandbox?: unknown;
@@ -481,8 +483,7 @@ export interface CredentialSpec {
  * introspection API and exposes it through a dedicated endpoint).
  */
 export type ProviderCredentialCatalog =
-  | { kind: 'static'; specs: CredentialSpec[] }
-  | { kind: 'dynamic' };
+  { kind: 'static'; specs: CredentialSpec[] } | { kind: 'dynamic' };
 
 /**
  * Registration entry for a provider in the provider registry.
