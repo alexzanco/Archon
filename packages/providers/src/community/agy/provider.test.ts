@@ -214,6 +214,48 @@ describe('AgyProvider', () => {
     }
   });
 
+  test('fails typed when supervisor is a bare command absent from PATH and fail_closed is set', async () => {
+    // Regression for the 2026-07-22 rehearsal: ZANCO_SANDBOX_BIN unset defaults to
+    // the bare name `zanco-sandbox`. The old guard only checked paths containing a
+    // slash, so a bare command missing from PATH bypassed fail-closed and the
+    // author ran unconfined. Point PATH at a directory without the binary.
+    const fakeAgy = writeExecutable('agy-bare-supervisor', '#!/bin/sh\nexit 0\n');
+    const packet = join(tmpRoot, 'bare-supervisor-packet.json');
+    const output = join(tmpRoot, 'bare-supervisor-output');
+    const policy = join(tmpRoot, 'bare-supervisor-policy.json');
+    writeFileSync(packet, '{}');
+    writeFileSync(policy, '{}');
+    mkdirSync(output, { recursive: true });
+    const emptyBinDir = join(tmpRoot, 'empty-bin');
+    mkdirSync(emptyBinDir, { recursive: true });
+    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
+    const previousPath = process.env.PATH;
+    delete process.env.ZANCO_SANDBOX_BIN;
+    process.env.PATH = emptyBinDir;
+
+    try {
+      await expect(
+        collect(
+          new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
+            assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+            nodeConfig: {
+              sandbox: {
+                os: 'bwrap',
+                policy_path: policy,
+                fail_closed: true,
+              },
+            },
+          })
+        )
+      ).rejects.toBeInstanceOf(OsJailUnavailableError);
+    } finally {
+      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
+      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+
   test('emits best-effort tool chunks from AGY transcript logs', async () => {
     const conversationId = 'ab880491-881c-47be-8553-928097aced5f';
     const appDataDir = join(tmpRoot, 'antigravity-cli-data');

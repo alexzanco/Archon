@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { createLogger } from '@archon/paths';
 
 import type {
@@ -286,6 +286,25 @@ function startAgyPrint(
   return { done };
 }
 
+/**
+ * Resolve the sandbox supervisor binary to an executable path. Accepts an
+ * explicit path (containing a slash) or a bare command name looked up on PATH.
+ * Returns undefined when nothing executable is found; callers decide whether that
+ * is fatal (fail_closed) or a permitted unconfined fallback.
+ */
+function resolveSupervisorBinary(): string | undefined {
+  const configured = process.env.ZANCO_SANDBOX_BIN ?? 'zanco-sandbox';
+  if (configured.includes('/')) {
+    return existsSync(configured) ? configured : undefined;
+  }
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, configured);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 function wrapWithSupervisor(
   binaryPath: string,
   agyArgs: string[],
@@ -293,9 +312,19 @@ function wrapWithSupervisor(
   spec: SupervisorSpec | undefined
 ): WrappedAgy {
   if (!spec) return { command: binaryPath, args: agyArgs, env: environment };
-  const supervisorPath = process.env.ZANCO_SANDBOX_BIN ?? 'zanco-sandbox';
-  if (spec.failClosed && supervisorPath.includes('/') && !existsSync(supervisorPath)) {
-    throw new OsJailUnavailableError(`zanco-sandbox is unavailable: ${supervisorPath}`);
+  const supervisorPath = resolveSupervisorBinary();
+  if (!supervisorPath) {
+    // A fail_closed node must never silently run unconfined when its enforcement
+    // binary cannot be resolved. This covers a bare `zanco-sandbox` that is not on
+    // PATH — the exact gap that let authors run unjailed in the 2026-07-22
+    // rehearsal even though the jail was fully wired on every side.
+    if (spec.failClosed) {
+      throw new OsJailUnavailableError(
+        'zanco-sandbox is unavailable (checked ZANCO_SANDBOX_BIN and PATH); ' +
+          'refusing to run a fail_closed author unconfined'
+      );
+    }
+    return { command: binaryPath, args: agyArgs, env: environment };
   }
   // The trusted stage CLI owns policy construction.  Keep Archon as a router:
   // it receives the resolved per-instance path and prefixes the provider command.
