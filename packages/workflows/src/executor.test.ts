@@ -102,17 +102,15 @@ function makePlatform(): IWorkflowPlatform {
 function makeDeps(store?: IWorkflowStore): WorkflowDeps {
   return {
     store: store ?? makeStore(),
-    loadConfig: mock(
-      async (): Promise<WorkflowConfig> => ({
-        assistant: 'claude' as const,
-        assistants: {
-          claude: {},
-          codex: {},
-        },
-        baseBranch: '',
-        commands: { folder: '' },
-      })
-    ),
+    loadConfig: mock(async (): Promise<WorkflowConfig> => ({
+      assistant: 'claude' as const,
+      assistants: {
+        claude: {},
+        codex: {},
+      },
+      baseBranch: '',
+      commands: { folder: '' },
+    })),
     getAgentProvider: mock(() => ({
       run: mock(async () => {}),
     })),
@@ -482,15 +480,13 @@ describe('executeWorkflow', () => {
       const store = makeStore();
       const deps = {
         store,
-        loadConfig: mock(
-          async (): Promise<WorkflowConfig> => ({
-            assistant: 'claude' as const,
-            assistants: { claude: {}, codex: {} },
-            baseBranch: '',
-            commands: { folder: '' },
-            docsPath: 'packages/docs-web/src/content/docs',
-          })
-        ),
+        loadConfig: mock(async (): Promise<WorkflowConfig> => ({
+          assistant: 'claude' as const,
+          assistants: { claude: {}, codex: {} },
+          baseBranch: '',
+          commands: { folder: '' },
+          docsPath: 'packages/docs-web/src/content/docs',
+        })),
         getAgentProvider: mock(() => ({
           run: mock(async () => {}),
         })),
@@ -559,8 +555,7 @@ describe('executeWorkflow', () => {
       // workflowRun, provider, model, artifactsDir, logDir, baseBranch,
       // docsDir, config, configuredCommandFolder, issueContext, priorCompletedNodes
       const passedPriors = mockExecuteDagWorkflow.mock.calls[0]?.[15] as
-        | Map<string, string>
-        | undefined;
+        Map<string, string> | undefined;
       expect(passedPriors).toBe(priorCompletedNodes);
       // No fresh row created when a preCreatedRun is supplied.
       expect(store.createWorkflowRun).not.toHaveBeenCalled();
@@ -1096,17 +1091,15 @@ describe('telemetry wiring', () => {
     const store = makeStore();
     const deps = {
       ...makeDeps(store),
-      loadConfig: mock(
-        async (): Promise<WorkflowConfig> => ({
-          assistant: 'claude',
-          assistants: { claude: {}, codex: {} },
-          baseBranch: '',
-          commands: { folder: '' },
-          tiers: {
-            large: { provider: 'codex', model: 'gpt-5.5', effort: 'high' },
-          },
-        })
-      ),
+      loadConfig: mock(async (): Promise<WorkflowConfig> => ({
+        assistant: 'claude',
+        assistants: { claude: {}, codex: {} },
+        baseBranch: '',
+        commands: { folder: '' },
+        tiers: {
+          large: { provider: 'codex', model: 'gpt-5.5', effort: 'high' },
+        },
+      })),
     } as WorkflowDeps;
 
     await executeWorkflow(
@@ -1142,17 +1135,15 @@ describe('telemetry wiring', () => {
     }));
     const deps = {
       ...makeDeps(store),
-      loadConfig: mock(
-        async (): Promise<WorkflowConfig> => ({
-          assistant: 'claude',
-          assistants: { claude: {}, codex: {} },
-          baseBranch: '',
-          commands: { folder: '' },
-          tiers: {
-            large: { provider: 'claude', model: 'opus' },
-          },
-        })
-      ),
+      loadConfig: mock(async (): Promise<WorkflowConfig> => ({
+        assistant: 'claude',
+        assistants: { claude: {}, codex: {} },
+        baseBranch: '',
+        commands: { folder: '' },
+        tiers: {
+          large: { provider: 'claude', model: 'opus' },
+        },
+      })),
       getUserAiPrefs,
     } as WorkflowDeps;
 

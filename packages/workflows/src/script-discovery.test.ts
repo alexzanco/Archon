@@ -1,10 +1,16 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import * as realFs from 'node:fs/promises';
 
 // Mock fs/promises before importing the module under test
-const mockReaddir = mock(async (_path: string): Promise<string[]> => []);
-const mockStat = mock(async (_path: string) => ({ isDirectory: () => false }));
+const mockReaddir = mock(async (path: string, options?: any) => {
+  return realFs.readdir(path, options as any);
+});
+const mockStat = mock(async (path: string, options?: any) => {
+  return realFs.stat(path, options as any);
+});
 
 mock.module('fs/promises', () => ({
+  ...realFs,
   readdir: mockReaddir,
   stat: mockStat,
 }));

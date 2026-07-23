@@ -1531,8 +1531,7 @@ describe('workflow dispatch routing — interactive flag', () => {
     await handleMessage(platform, 'conv-1', '/workflow run test-workflow');
 
     const prompt = (platform.sendMessage as ReturnType<typeof mock>).mock.calls.at(-1)?.[1] as
-      | string
-      | undefined;
+      string | undefined;
     expect(prompt).toContain(`> line one ${'x'.repeat(151)}…`);
     expect(prompt).not.toContain('\nline one\n');
   });
@@ -1555,8 +1554,7 @@ describe('workflow dispatch routing — interactive flag', () => {
     await handleMessage(platform, 'conv-1', '/workflow run test-workflow');
 
     const prompt = (platform.sendMessage as ReturnType<typeof mock>).mock.calls.at(-1)?.[1] as
-      | string
-      | undefined;
+      string | undefined;
     expect(prompt).toContain('/workflow run test-workflow "fix \\\\ path \\"quoted\\" \\`tick\\`"');
     expect(prompt).toContain(
       '/workflow run test-workflow --force "fix \\\\ path \\"quoted\\" \\`tick\\`"'
@@ -2798,8 +2796,7 @@ describe('resolveUserProviderEnvForChat — chat env injection', () => {
     await handleMessage(platform, 'conv-1', 'hello there');
     // generateAndSetTitle(convId, msg, provider, cwd, sessionId?, assistantConfig?, titleOptions)
     const titleOptions = mockGenerateAndSetTitle.mock.calls[0]?.[6] as
-      | { env?: Record<string, string> }
-      | undefined;
+      { env?: Record<string, string> } | undefined;
     expect(titleOptions?.env).toMatchObject({ ANTHROPIC_OAUTH_TOKEN: 'sk-ant-oat01-x' });
   });
 
@@ -2813,8 +2810,7 @@ describe('resolveUserProviderEnvForChat — chat env injection', () => {
     const platform = makePlatform();
     await handleMessage(platform, 'conv-1', 'hello');
     const requestOptions = mockSendQuery.mock.calls[0]?.[3] as
-      | { env?: Record<string, string> }
-      | undefined;
+      { env?: Record<string, string> } | undefined;
     // Codex OAuth would write auth.json + set CODEX_HOME — both must be absent in chat.
     expect(requestOptions?.env?.CODEX_HOME).toBeUndefined();
   });

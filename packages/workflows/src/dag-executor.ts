@@ -971,6 +971,7 @@ async function executeNodeInternal(
       ? STRUCTURED_OUTPUT_MAX_REASKS
       : 0;
   let accumulatedCostUsd: number | undefined;
+  let reaskAttempt = 0;
 
   // One sendQuery stream pass. Resets the per-attempt accumulators it mutates
   // (output text, structured output, the batched-message buffer, per-pass cost,
@@ -1164,7 +1165,7 @@ async function executeNodeInternal(
             const toolMsg = formatToolCall(msg.toolName, msg.toolInput);
             await safeSendMessage(platform, conversationId, toolMsg, nodeContext, {
               category: 'tool_call_formatted',
-            } as WorkflowMessageMetadata);
+            });
 
             // Send structured event to adapters that support it (Web UI)
             if (platform.sendStructuredEvent) {
@@ -1538,7 +1539,6 @@ async function executeNodeInternal(
     // (maxReasks = 0). A best-effort node whose structured output is missing or
     // schema-invalid is re-run with the errors appended, up to maxReasks times;
     // exhaustion (or a non-best-effort failure) throws → failed node.
-    let reaskAttempt = 0;
     let reaskPrompt = finalPrompt;
     // Set up the next reask attempt (increment, augment the prompt, notify).
     const scheduleReask = async (errors: string[]): Promise<void> => {
@@ -2686,7 +2686,7 @@ async function executeLoopNode(
             if (toolMsg) {
               await safeSendMessage(platform, conversationId, toolMsg, msgContext, {
                 category: 'tool_call_formatted',
-              } as WorkflowMessageMetadata);
+              });
             }
             if (platform.sendStructuredEvent) {
               await platform.sendStructuredEvent(conversationId, msg);

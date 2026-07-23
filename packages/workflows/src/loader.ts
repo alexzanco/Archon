@@ -222,8 +222,7 @@ function validateDagStructure(nodes: DagNode[]): string | null {
 }
 
 export type ParseResult =
-  | { workflow: WorkflowDefinition; error: null }
-  | { workflow: null; error: WorkflowLoadError };
+  { workflow: WorkflowDefinition; error: null } | { workflow: null; error: WorkflowLoadError };
 
 /**
  * Parse and validate a workflow YAML file
