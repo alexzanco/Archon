@@ -3525,7 +3525,7 @@ export function registerApiRoutes(
           return c.json({
             workflow: result.workflow,
             filename,
-            source: 'project' as WorkflowSource,
+            source: 'project',
           });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -3548,7 +3548,7 @@ export function registerApiRoutes(
           return c.json({
             workflow: result.workflow,
             filename,
-            source: 'global' as WorkflowSource,
+            source: 'global',
           });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -3565,7 +3565,7 @@ export function registerApiRoutes(
         if (result.error) {
           return apiError(c, 500, `Bundled workflow is invalid: ${result.error.error}`);
         }
-        return c.json({ workflow: result.workflow, filename, source: 'bundled' as WorkflowSource });
+        return c.json({ workflow: result.workflow, filename, source: 'bundled' });
       }
 
       if (!isBinaryBuild()) {
@@ -3579,7 +3579,7 @@ export function registerApiRoutes(
           return c.json({
             workflow: result.workflow,
             filename,
-            source: 'bundled' as WorkflowSource,
+            source: 'bundled',
           });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {

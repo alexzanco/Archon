@@ -100,7 +100,7 @@ export function toRun(raw: RawWorkflowRun): Run {
     typeof approval === 'object' &&
     approval !== undefined &&
     'nodeId' in approval &&
-    typeof (approval as { nodeId: unknown }).nodeId === 'string'
+    typeof approval.nodeId === 'string'
       ? {
           nodeId: (approval as { nodeId: string }).nodeId,
           message:
