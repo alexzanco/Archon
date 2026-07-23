@@ -957,6 +957,10 @@ async function executeNodeInternal(
   let nodeBudgetFailure: Error | undefined;
   const effectiveIdleTimeout = node.idle_timeout ?? STEP_IDLE_TIMEOUT_MS;
   let lastToolStartedAt: { toolName: string; startedAt: number } | null = null;
+  // Fuse evidence is reportable workflow state, not best-effort logging. Keep
+  // its writes bounded to one promise per threshold/pass and flush them before
+  // the pass can complete.
+  const pendingFuseEventWrites: Promise<void>[] = [];
 
   // Best-effort providers (Pi/Copilot) get a bounded validate-and-reask loop: on a
   // structured-output validation miss, re-run the stream with the schema errors
@@ -984,23 +988,46 @@ async function executeNodeInternal(
     nodeIdleTimedOut = false;
     const budgetFuse = new BudgetFuse(node.budget, (which, enforcement) => {
       const eventType = enforcement === 'enforce' ? 'budget_exceeded' : 'budget_would_abort';
+      const snapshot = budgetFuse.snapshot();
+      const limit =
+        which === 'max_tool_calls'
+          ? node.budget?.max_tool_calls
+          : which === 'max_tool_result_bytes'
+            ? node.budget?.max_tool_result_bytes
+            : which === 'max_single_tool_result_bytes'
+              ? node.budget?.max_single_tool_result_bytes
+              : which === 'max_wall_seconds'
+                ? node.budget?.max_wall_seconds
+                : node.budget?.forbidden_path_globs?.length;
       getLog().warn(
         { nodeId: node.id, workflowRunId: workflowRun.id, which, enforcement },
         eventType
       );
-      deps.store
-        .createWorkflowEvent({
-          workflow_run_id: workflowRun.id,
-          event_type: eventType,
-          step_name: node.id,
-          data: { which, enforcement, ...budgetFuse.snapshot() },
-        })
-        .catch((err: Error) => {
-          getLog().error(
-            { err, workflowRunId: workflowRun.id, eventType },
-            'workflow_event_persist_failed'
-          );
-        });
+      pendingFuseEventWrites.push(
+        deps.store
+          .createWorkflowEvent({
+            workflow_run_id: workflowRun.id,
+            event_type: eventType,
+            step_name: node.id,
+            data: {
+              which,
+              enforcement,
+              iteration: reaskAttempt + 1,
+              limit,
+              observed_tool_calls: snapshot.toolCalls,
+              observed_tool_result_bytes: snapshot.toolResultBytes,
+              observed_peak_tool_result_bytes: snapshot.peakToolResultBytes,
+              provider,
+              node_id: node.id,
+            },
+          })
+          .catch((err: Error) => {
+            getLog().error(
+              { err, workflowRunId: workflowRun.id, eventType },
+              'workflow_event_persist_failed'
+            );
+          })
+      );
       if (enforcement === 'enforce') {
         nodeBudgetFailure = new Error(`BUDGET_EXCEEDED:${which}`);
         nodeAbortController.abort();
@@ -1476,6 +1503,7 @@ async function executeNodeInternal(
       if (nodeBudgetFailure) throw nodeBudgetFailure;
     } finally {
       budgetFuse.dispose();
+      await Promise.all(pendingFuseEventWrites.splice(0));
     }
   };
 

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { resolve, relative } from 'node:path';
 
 import type { MessageChunk } from '../../types';
 
@@ -54,7 +55,8 @@ export async function readAgyToolChunksFromLog(logFilePath: string): Promise<Mes
 
 export async function* tailAgyToolChunksFromLog(
   logFilePath: string,
-  donePromise: Promise<unknown>
+  donePromise: Promise<unknown>,
+  captureRoot?: string
 ): AsyncGenerator<MessageChunk> {
   const parser = new AgyTranscriptToolParser();
   let location: TranscriptLocation | undefined;
@@ -74,7 +76,7 @@ export async function* tailAgyToolChunksFromLog(
     if (!location) {
       const logText = await readTextIfExists(logFilePath);
       if (logText) {
-        location = resolveTranscriptLocation(logText);
+        location = resolveTranscriptLocation(logText, captureRoot);
       }
     }
 
@@ -92,7 +94,7 @@ export async function* tailAgyToolChunksFromLog(
       if (!location) {
         const logText = await readTextIfExists(logFilePath);
         if (logText) {
-          location = resolveTranscriptLocation(logText);
+          location = resolveTranscriptLocation(logText, captureRoot);
         }
       }
       if (location) {
@@ -165,21 +167,37 @@ class AgyTranscriptToolParser {
   }
 }
 
-function resolveTranscriptLocation(logText: string): TranscriptLocation | undefined {
+function resolveTranscriptLocation(
+  logText: string,
+  captureRoot?: string
+): TranscriptLocation | undefined {
   const conversationId = extractConversationId(logText);
   if (!conversationId) return undefined;
   const appDataDir = extractAppDataDir(logText) ?? FALLBACK_APP_DATA_DIR;
+  const transcriptPath = join(
+    appDataDir,
+    'brain',
+    conversationId,
+    '.system_generated',
+    'logs',
+    'transcript_full.jsonl'
+  );
+  if (captureRoot && !isPathBelow(transcriptPath, captureRoot)) return undefined;
   return {
     conversationId,
-    transcriptPath: join(
-      appDataDir,
-      'brain',
-      conversationId,
-      '.system_generated',
-      'logs',
-      'transcript_full.jsonl'
-    ),
+    transcriptPath,
   };
+}
+
+function isPathBelow(candidate: string, root: string): boolean {
+  const path = resolve(candidate);
+  const base = resolve(root);
+  const rel = relative(base, path);
+  return (
+    rel !== '' &&
+    !rel.startsWith('..') &&
+    !rel.includes(`..${process.platform === 'win32' ? '\\' : '/'}`)
+  );
 }
 
 function extractConversationId(logText: string): string | undefined {

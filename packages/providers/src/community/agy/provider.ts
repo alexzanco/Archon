@@ -93,9 +93,13 @@ export class AgyProvider implements IAgentProvider {
       options?.outputFormat?.type === 'json_schema'
         ? augmentPromptForJsonSchema(prompt, options.outputFormat.schema)
         : prompt;
-    const transcriptCapture = runOptions.transcriptToolEvents
-      ? createTranscriptCapture()
-      : undefined;
+    // A jailed AGY always needs a private capture root: the supervisor makes
+    // its isolated HOME below this directory and the provider owns deletion
+    // only after the tailer has consumed the final transcript bytes.
+    const transcriptCapture =
+      runOptions.transcriptToolEvents || runOptions.supervisor
+        ? createTranscriptCapture()
+        : undefined;
     const args = buildAgyArgs(runOptions, finalPrompt, transcriptCapture?.logFilePath);
 
     try {
@@ -107,12 +111,20 @@ export class AgyProvider implements IAgentProvider {
         },
         'agy.query_started'
       );
-      const run = startAgyPrint(binaryPath, args, cwd, options, runOptions.supervisor);
-      if (transcriptCapture) {
+      const run = startAgyPrint(
+        binaryPath,
+        args,
+        cwd,
+        options,
+        runOptions.supervisor,
+        transcriptCapture?.directory
+      );
+      if (transcriptCapture && runOptions.transcriptToolEvents) {
         try {
           for await (const chunk of tailAgyToolChunksFromLog(
             transcriptCapture.logFilePath,
-            run.done
+            run.done,
+            runOptions.supervisor ? transcriptCapture.directory : undefined
           )) {
             yield chunk;
           }
@@ -225,7 +237,8 @@ function startAgyPrint(
   args: string[],
   cwd: string,
   options: SendQueryOptions | undefined,
-  supervisor: SupervisorSpec | undefined
+  supervisor: SupervisorSpec | undefined,
+  captureRoot: string | undefined
 ): RunningAgyPrint {
   const abortSignal = options?.abortSignal;
   if (abortSignal?.aborted) {
@@ -233,7 +246,7 @@ function startAgyPrint(
   }
 
   const environment = buildAgyEnv(options?.env);
-  const wrapped = wrapWithSupervisor(binaryPath, args, environment, supervisor);
+  const wrapped = wrapWithSupervisor(binaryPath, args, environment, supervisor, captureRoot);
   const child = spawn(wrapped.command, wrapped.args, {
     cwd,
     env: wrapped.env,
@@ -309,9 +322,13 @@ function wrapWithSupervisor(
   binaryPath: string,
   agyArgs: string[],
   environment: Record<string, string>,
-  spec: SupervisorSpec | undefined
+  spec: SupervisorSpec | undefined,
+  captureRoot: string | undefined
 ): WrappedAgy {
   if (!spec) return { command: binaryPath, args: agyArgs, env: environment };
+  if (!captureRoot) {
+    throw new OsJailUnavailableError('OS-jailed AGY requires a private capture root');
+  }
   const supervisorPath = resolveSupervisorBinary();
   if (!supervisorPath) {
     // A fail_closed node must never silently run unconfined when its enforcement
@@ -331,7 +348,16 @@ function wrapWithSupervisor(
   if (spec.policyPath) {
     return {
       command: supervisorPath,
-      args: ['run', '--policy', spec.policyPath, '--', binaryPath, ...agyArgs],
+      args: [
+        'run',
+        '--policy',
+        spec.policyPath,
+        '--capture-root',
+        captureRoot,
+        '--',
+        binaryPath,
+        ...agyArgs,
+      ],
       env: environment,
     };
   }
@@ -354,7 +380,16 @@ function wrapWithSupervisor(
   );
   return {
     command: supervisorPath,
-    args: ['run', '--policy', policyPath, '--', binaryPath, ...agyArgs],
+    args: [
+      'run',
+      '--policy',
+      policyPath,
+      '--capture-root',
+      captureRoot,
+      '--',
+      binaryPath,
+      ...agyArgs,
+    ],
     env: environment,
     cleanup: (): void => {
       rmSync(directory, { recursive: true, force: true });

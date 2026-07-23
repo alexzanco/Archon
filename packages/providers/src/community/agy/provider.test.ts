@@ -5,6 +5,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 
 import type { MessageChunk, SendQueryOptions } from '../../types';
 import { AgyProvider, OsJailUnavailableError } from './provider';
+import { readAgyToolChunksFromTranscript } from './transcript-tools';
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'archon-agy-provider-'));
 
@@ -13,6 +14,16 @@ afterAll(() => {
 });
 
 describe('AgyProvider', () => {
+  test('replays the sanitized July 23 native transcript including string BypassSandbox metadata', async () => {
+    const fixture = join(import.meta.dir, '__fixtures__', 'sanitized-july23-transcript_full.jsonl');
+    const chunks = await readAgyToolChunksFromTranscript(fixture);
+    // Sanitized fixture: 13 representative calls (not the original 63); the
+    // string-valued permission metadata is parser data, not a namespace escape.
+    expect(chunks.filter(chunk => chunk.type === 'tool')).toHaveLength(13);
+    expect(chunks.filter(chunk => chunk.type === 'tool_result')).toHaveLength(13);
+    expect(chunks[0]).toMatchObject({ type: 'tool', toolName: 'List Dir' });
+  });
+
   test('spawns agy --print with supported options', async () => {
     const fakeAgy = writeExecutable(
       'agy-args',
