@@ -2414,6 +2414,7 @@ async function executeLoopNode(
     : '';
 
   let lastIterationOutput = '';
+  let lastUntilBashReceipt = '';
   let lastIterationStructuredOutput: unknown;
   let loopTotalCostUsd: number | undefined;
   let loopFinalStopReason: string | undefined;
@@ -2511,10 +2512,9 @@ async function executeLoopNode(
       // Build prompt — substituteWorkflowVariables throws if $BASE_BRANCH referenced but empty
       // Pass loopUserInput on the first resumed iteration; '' on all others (non-interactive
       // or subsequent iterations) so $LOOP_USER_INPUT substitutes to empty string explicitly.
-      // $LOOP_PREV_OUTPUT carries the previous iteration's cleaned output and is empty on
-      // the first iteration (no prior output exists). Across an interactive resume, the
-      // executor starts a fresh `lastIterationOutput` variable, so the first iteration of
-      // the resume also receives an empty $LOOP_PREV_OUTPUT.
+      // $LOOP_PREV_OUTPUT carries the previous iteration's cleaned output and
+      // $LOOP_GATE_RECEIPT carries the prior authoritative until_bash rejection.
+      // Both are empty on the first iteration (and after an interactive resume).
       const { prompt: substitutedPrompt } = substituteWorkflowVariables(
         rawPrompt,
         workflowRun.id,
@@ -2525,7 +2525,8 @@ async function executeLoopNode(
         issueContext,
         i === startIteration ? loopUserInput : '',
         undefined, // rejectionReason
-        i === startIteration ? '' : lastIterationOutput
+        i === startIteration ? '' : lastIterationOutput,
+        { loopGateReceipt: i === startIteration ? '' : lastUntilBashReceipt }
       );
       const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
 
@@ -2879,7 +2880,9 @@ async function executeLoopNode(
     // (e.g., "approved", "looks good"). The prompt instructs the AI on when to emit it.
     const signalDetected = loop.until ? detectCompletionSignal(fullOutput, loop.until) : false;
 
-    // Check deterministic bash condition (if configured)
+    // Check deterministic bash condition (if configured). Its exit contract is
+    // deliberate: 0 completes, 1 is an authoritative rejection for the next
+    // author iteration, and every other exit is infrastructure failure.
     let bashComplete = false;
     if (loop.until_bash) {
       try {
@@ -2902,9 +2905,10 @@ async function executeLoopNode(
           true, // escapedForBash
           logDir
         );
-        await execFileAsync('bash', ['-c', substitutedBash], {
+        const untilBashTimeout = node.timeout ?? node.idle_timeout ?? SUBPROCESS_DEFAULT_TIMEOUT;
+        const bashResult = await execFileAsync('bash', ['-c', substitutedBash], {
           cwd,
-          timeout: SUBPROCESS_DEFAULT_TIMEOUT,
+          timeout: untilBashTimeout,
           env: {
             ...process.env,
             USER_MESSAGE: workflowRun.user_message,
@@ -2922,23 +2926,62 @@ async function executeLoopNode(
             ...(config.envVars ?? {}),
           },
         });
+        await deps.store.createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'loop_until_bash_checked',
+          step_name: node.id,
+          data: {
+            iteration: i,
+            outcome: 'completed',
+            exitCode: 0,
+            stdout: bashResult.stdout,
+            stderr: bashResult.stderr,
+          },
+        });
+        lastUntilBashReceipt = '';
         bashComplete = true; // exit 0 = complete
       } catch (e) {
-        const bashErr = e as NodeJS.ErrnoException;
-        // ENOENT or other system errors are unexpected — log them
-        if (bashErr.code === 'ENOENT') {
-          getLog().warn(
-            { err: bashErr, nodeId: node.id, iteration: i },
-            'loop_node.until_bash_exec_error'
+        const bashErr = e as Error & {
+          code?: number | string | null;
+          stdout?: string;
+          stderr?: string;
+          killed?: boolean;
+        };
+        const exitCode = typeof bashErr.code === 'number' ? bashErr.code : null;
+        const outcome = exitCode === 1 ? 'rejected' : 'error';
+        const receipt = {
+          iteration: i,
+          outcome,
+          exitCode,
+          stdout: bashErr.stdout ?? '',
+          stderr: bashErr.stderr ?? '',
+        };
+        await deps.store.createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'loop_until_bash_checked',
+          step_name: node.id,
+          data: receipt,
+        });
+
+        if (outcome === 'rejected') {
+          lastUntilBashReceipt = JSON.stringify(receipt, null, 2);
+          bashComplete = false;
+        } else {
+          const formatted = formatSubprocessFailure(bashErr, `Loop node '${node.id}' until_bash`);
+          getLog().error(
+            { ...formatted.logFields, nodeId: node.id, iteration: i },
+            'loop_node.until_bash_infrastructure_error'
           );
-        } else if (bashErr.code !== undefined) {
-          // Log non-ENOENT system errors (syntax errors, permission issues, etc.)
-          getLog().warn(
-            { err: bashErr, nodeId: node.id, iteration: i },
-            'loop_node.until_bash_unexpected_error'
-          );
+          await safeSendMessage(platform, conversationId, formatted.userMessage, msgContext);
+          return {
+            state: 'failed',
+            output: lastIterationOutput,
+            error: formatted.userMessage,
+            costUsd: loopTotalCostUsd,
+            ...(loopTotalTokens !== undefined ? { tokens: loopTotalTokens } : {}),
+            loopIterations: i,
+          };
         }
-        bashComplete = false; // non-zero exit = not complete
       }
     }
 
@@ -3090,9 +3133,12 @@ async function executeLoopNode(
   }
 
   // Max iterations exceeded
-  const errorMsg = `Loop node '${node.id}' exceeded max iterations (${String(loop.max_iterations)}) without completion signal '${loop.until}'`;
+  const completionCondition = loop.until_bash
+    ? 'until_bash exit 0'
+    : `completion signal '${loop.until}'`;
+  const errorMsg = `Loop node '${node.id}' exceeded max iterations (${String(loop.max_iterations)}) without ${completionCondition}`;
   getLog().warn(
-    { nodeId: node.id, maxIterations: loop.max_iterations, signal: loop.until },
+    { nodeId: node.id, maxIterations: loop.max_iterations, completionCondition },
     'loop_node.max_iterations_reached'
   );
   await safeSendMessage(platform, conversationId, errorMsg, msgContext);
