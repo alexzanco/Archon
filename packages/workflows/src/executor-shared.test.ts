@@ -287,6 +287,25 @@ describe('substituteWorkflowVariables', () => {
     expect(prompt).toBe('Previous output:  (end)');
   });
 
+  it('replaces $LOOP_GATE_RECEIPT with the authoritative loop check receipt', () => {
+    const { prompt } = substituteWorkflowVariables(
+      'Gate receipt:\n$LOOP_GATE_RECEIPT',
+      'run-1',
+      'msg',
+      '/tmp',
+      'main',
+      'docs/',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        loopGateReceipt: '{"outcome":"rejected","reasonCodes":["MISLEADING_EXCERPT"]}',
+      }
+    );
+    expect(prompt).toContain('MISLEADING_EXCERPT');
+  });
+
   it('does not affect prompts that omit $LOOP_PREV_OUTPUT', () => {
     const { prompt } = substituteWorkflowVariables(
       'Plain prompt with no loop variable.',

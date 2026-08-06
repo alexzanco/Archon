@@ -2246,11 +2246,12 @@ describe('workflowRunCommand — detach', () => {
     // Capture call data BEFORE mockRestore() — restoring a spy clears its recorded calls.
     let spawnCallCount = 0;
     let spawnCmd: string[] = [];
-    let spawnOptions: { cwd: string; cmd: string[] } | undefined;
+    let spawnOptions: { cwd: string; cmd: string[]; detached?: boolean } | undefined;
     try {
       await workflowRunCommand('/test/path', 'assist', 'hello', { detach: true });
       spawnCallCount = spawnSpy.mock.calls.length;
-      spawnOptions = spawnSpy.mock.calls[0]?.[0] as { cwd: string; cmd: string[] } | undefined;
+      spawnOptions = spawnSpy.mock.calls[0]?.[0] as
+        { cwd: string; cmd: string[]; detached?: boolean } | undefined;
       spawnCmd = (spawnOptions?.cmd ?? []).slice();
     } finally {
       process.argv = savedArgv;
@@ -2265,6 +2266,9 @@ describe('workflowRunCommand — detach', () => {
     const cwdIdx = spawnCmd.indexOf('--cwd');
     expect(spawnCmd[cwdIdx + 1]).toBe('/test/path');
     expect(spawnOptions?.cwd).toBe('/test/path');
+    // `unref()` only lets the launcher exit; a separate process group is what
+    // keeps the workflow child alive when the launching terminal is cleaned up.
+    expect(spawnOptions?.detached).toBe(true);
     // Generated branch is `assist-<timestamp>`
     const branchIdx = spawnCmd.indexOf('--branch');
     expect(spawnCmd[branchIdx + 1]).toMatch(/^assist-\d+$/);

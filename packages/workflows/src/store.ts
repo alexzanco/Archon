@@ -36,6 +36,7 @@ export const WORKFLOW_EVENT_TYPES = [
   'loop_iteration_completed',
   'loop_iteration_failed',
   'loop_iteration_refused',
+  'loop_until_bash_checked',
   'budget_would_abort',
   'budget_exceeded',
   'tool_called',

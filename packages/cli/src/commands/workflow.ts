@@ -197,6 +197,9 @@ function spawnDetachedWorkflowRun(
       cwd,
       env: process.env,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+      // `unref()` only lets this CLI process exit. A new process group is also
+      // required so terminal/launcher cleanup cannot kill the workflow child.
+      detached: true,
     });
     child.unref();
   } finally {

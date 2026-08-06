@@ -81,6 +81,8 @@ export const sandboxSettingsSchema = z
     os: z.literal('bwrap').optional(),
     /** Fully resolved supervisor policy emitted by an upstream staging node. */
     policy_path: z.string().min(1).optional(),
+    /** Explicit consumer-owned executable that creates the broker factory. */
+    supervisor_bin: z.string().min(1).optional(),
     packet: z.string().min(1).optional(),
     rw_output: z.string().min(1).optional(),
     capabilities: z.array(z.string().min(1)).optional(),

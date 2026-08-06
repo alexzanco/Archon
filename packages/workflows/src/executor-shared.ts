@@ -406,6 +406,8 @@ export const CONTEXT_VAR_PATTERN_STR =
  * - $LOOP_PREV_OUTPUT - Cleaned output of the previous loop iteration. Empty string on the
  *   first iteration (no prior output exists). Useful for fresh_context loops that need
  *   to reference what the previous pass produced or why it failed.
+ * - $LOOP_GATE_RECEIPT - Structured stdout/stderr receipt from the previous `until_bash`
+ *   check. Empty on the first iteration and after a check that did not reject the work.
  *
  * When issueContext is undefined, context variables are replaced with empty string
  * to avoid sending literal "$CONTEXT" to the AI.
@@ -421,7 +423,7 @@ export function substituteWorkflowVariables(
   loopUserInput?: string,
   rejectionReason?: string,
   loopPrevOutput?: string,
-  options?: { shellSafe?: boolean }
+  options?: { shellSafe?: boolean; loopGateReceipt?: string }
 ): { prompt: string; contextSubstituted: boolean } {
   // Fail fast if the prompt references $BASE_BRANCH but no base branch could be resolved
   if (!baseBranch && prompt.includes('$BASE_BRANCH')) {
@@ -449,7 +451,8 @@ export function substituteWorkflowVariables(
       .replace(/\$ARGUMENTS/g, userMessage)
       .replace(/\$LOOP_USER_INPUT/g, loopUserInput ?? '')
       .replace(/\$REJECTION_REASON/g, rejectionReason ?? '')
-      .replace(/\$LOOP_PREV_OUTPUT/g, loopPrevOutput ?? '');
+      .replace(/\$LOOP_PREV_OUTPUT/g, loopPrevOutput ?? '')
+      .replace(/\$LOOP_GATE_RECEIPT/g, options?.loopGateReceipt ?? '');
   }
 
   // Check if context variables exist (use fresh regex to avoid lastIndex issues)

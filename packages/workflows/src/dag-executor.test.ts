@@ -4078,6 +4078,105 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(mockSendQueryDag.mock.calls.length).toBe(2);
     });
 
+    it('persists an until_bash rejection and gives its receipt to the next fresh iteration', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield { type: 'assistant', content: 'Curated candidate' };
+        yield { type: 'result', sessionId: 'loop-gate-receipt-session' };
+      });
+      const store = createMockStore();
+
+      await executeDagWorkflow(
+        createMockDeps(store),
+        createMockPlatform(),
+        'conv-loop-gate-receipt',
+        testDir,
+        {
+          name: 'dag-loop-gate-receipt',
+          nodes: [
+            {
+              id: 'curate',
+              loop: {
+                prompt: 'Authoritative receipt: $LOOP_GATE_RECEIPT',
+                until_bash:
+                  'if [ -f .until-bash-receipt ]; then exit 0; fi; touch .until-bash-receipt; printf \'%s\\n\' \'{"verdict":"red","reasonCodes":["MISLEADING_EXCERPT"]}\'; exit 1',
+                max_iterations: 2,
+                fresh_context: true,
+              },
+            },
+          ],
+        },
+        makeWorkflowRun(),
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag).toHaveBeenCalledTimes(2);
+      expect(mockSendQueryDag.mock.calls[0][0]).toContain('Authoritative receipt: ');
+      expect(mockSendQueryDag.mock.calls[1][0]).toContain('MISLEADING_EXCERPT');
+      expect(store.createWorkflowEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'loop_until_bash_checked',
+          step_name: 'curate',
+          data: expect.objectContaining({
+            iteration: 1,
+            outcome: 'rejected',
+            exitCode: 1,
+            stdout: '{"verdict":"red","reasonCodes":["MISLEADING_EXCERPT"]}\n',
+          }),
+        })
+      );
+    });
+
+    it('fails immediately when until_bash returns an infrastructure error', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield { type: 'assistant', content: 'Curated candidate' };
+        yield { type: 'result', sessionId: 'loop-gate-error-session' };
+      });
+      const store = createMockStore();
+
+      await executeDagWorkflow(
+        createMockDeps(store),
+        createMockPlatform(),
+        'conv-loop-gate-error',
+        testDir,
+        {
+          name: 'dag-loop-gate-error',
+          nodes: [
+            {
+              id: 'curate',
+              loop: {
+                prompt: 'Curate candidate',
+                until_bash: "printf '%s\\n' 'gate service unavailable' >&2; exit 4",
+                max_iterations: 2,
+              },
+            },
+          ],
+        },
+        makeWorkflowRun(),
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag).toHaveBeenCalledTimes(1);
+      expect(store.failWorkflowRun).toHaveBeenCalledTimes(1);
+      expect(store.createWorkflowEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'loop_until_bash_checked',
+          data: expect.objectContaining({ outcome: 'error', exitCode: 4 }),
+        })
+      );
+    });
+
     it('completes on <promise>COMPLETE</promise> signal in first iteration', async () => {
       mockSendQueryDag.mockImplementation(function* () {
         yield { type: 'assistant', content: 'Did the task. <promise>COMPLETE</promise>' };

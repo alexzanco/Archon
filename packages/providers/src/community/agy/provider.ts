@@ -32,6 +32,8 @@ interface AgyRunOptions {
 interface SupervisorSpec {
   /** A policy assembled by the trusted staging CLI for this exact instance. */
   policyPath?: string;
+  /** An explicit consumer-owned supervisor executable, never an import path. */
+  supervisorBin?: string;
   runId?: string;
   stage?: string;
   itemKey?: string;
@@ -305,8 +307,8 @@ function startAgyPrint(
  * Returns undefined when nothing executable is found; callers decide whether that
  * is fatal (fail_closed) or a permitted unconfined fallback.
  */
-function resolveSupervisorBinary(): string | undefined {
-  const configured = process.env.ZANCO_SANDBOX_BIN ?? 'zanco-sandbox';
+function resolveSupervisorBinary(requested?: string): string | undefined {
+  const configured = requested ?? process.env.ZANCO_SANDBOX_BIN ?? 'zanco-sandbox';
   if (configured.includes('/')) {
     return existsSync(configured) ? configured : undefined;
   }
@@ -329,7 +331,7 @@ function wrapWithSupervisor(
   if (!captureRoot) {
     throw new OsJailUnavailableError('OS-jailed AGY requires a private capture root');
   }
-  const supervisorPath = resolveSupervisorBinary();
+  const supervisorPath = resolveSupervisorBinary(spec.supervisorBin);
   if (!supervisorPath) {
     // A fail_closed node must never silently run unconfined when its enforcement
     // binary cannot be resolved. This covers a bare `zanco-sandbox` that is not on
@@ -375,7 +377,6 @@ function wrapWithSupervisor(
       capabilities: spec.capabilities,
       net: spec.networkEnabled,
       fail_closed: spec.failClosed,
-      backend: 'prov.curate',
     })
   );
   return {
@@ -440,8 +441,9 @@ function resolveSupervisor(rawSandbox: unknown): SupervisorSpec | undefined {
   const sandbox = rawSandbox as Record<string, unknown>;
   if (sandbox.os !== 'bwrap') return undefined;
   const policyPath = stringFromNode(sandbox.policy_path);
+  const supervisorBin = stringFromNode(sandbox.supervisor_bin);
   if (policyPath) {
-    return { policyPath, failClosed: sandbox.fail_closed !== false };
+    return { policyPath, supervisorBin, failClosed: sandbox.fail_closed !== false };
   }
   const packet = stringFromNode(sandbox.packet);
   const rwOutput = stringFromNode(sandbox.rw_output);
@@ -459,6 +461,7 @@ function resolveSupervisor(rawSandbox: unknown): SupervisorSpec | undefined {
     runId,
     stage,
     itemKey,
+    supervisorBin,
     externalId,
     packet,
     rwOutput,

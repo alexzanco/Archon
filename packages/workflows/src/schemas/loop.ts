@@ -18,7 +18,10 @@ export const loopNodeConfigSchema = z
     max_iterations: z.number().int().positive("'loop.max_iterations' must be a positive integer"),
     /** Whether to start fresh session each iteration (default: false). */
     fresh_context: z.boolean().default(false),
-    /** Optional bash script run after each iteration; exit 0 = complete. */
+    /**
+     * Optional bash script run after each iteration. Exit 0 completes the loop,
+     * exit 1 requests another iteration, and any other exit fails the loop.
+     */
     until_bash: z.string().optional(),
     /** When true, pause between iterations for user input via /workflow approve. */
     interactive: z.boolean().optional(),
