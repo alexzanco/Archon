@@ -192,6 +192,8 @@ export type MessageChunk =
       sessionId?: string;
       tokens?: TokenUsage;
       structuredOutput?: unknown;
+      /** Retained isolated AGY HOME for supervised runs, including accounting metadata. */
+      captureRoot?: string;
       isError?: boolean;
       errorSubtype?: string;
       /** SDK-provided error detail strings. Populated when isError is true. */

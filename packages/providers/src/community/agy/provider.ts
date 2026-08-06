@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createLogger } from '@archon/paths';
@@ -66,6 +66,7 @@ interface AgyExit {
 
 interface RunningAgyPrint {
   done: Promise<{ stdout: string; stderr: string }>;
+  usesSupervisor: boolean;
 }
 
 interface WrappedAgy {
@@ -73,7 +74,11 @@ interface WrappedAgy {
   args: string[];
   env: Record<string, string>;
   cleanup?: () => void;
+  usesSupervisor: boolean;
 }
+
+const AGY_CAPTURE_PREFIX = 'archon-agy-';
+const DEFAULT_AGY_CAPTURE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
@@ -103,6 +108,7 @@ export class AgyProvider implements IAgentProvider {
         ? createTranscriptCapture()
         : undefined;
     const args = buildAgyArgs(runOptions, finalPrompt, transcriptCapture?.logFilePath);
+    let retainTranscriptCapture = false;
 
     try {
       getLog().debug(
@@ -121,6 +127,7 @@ export class AgyProvider implements IAgentProvider {
         runOptions.supervisor,
         transcriptCapture?.directory
       );
+      retainTranscriptCapture = run.usesSupervisor;
       if (transcriptCapture && runOptions.transcriptToolEvents) {
         try {
           for await (const chunk of tailAgyToolChunksFromLog(
@@ -146,7 +153,12 @@ export class AgyProvider implements IAgentProvider {
         yield { type: 'assistant', content };
       }
 
-      const resultChunk: MessageChunk = { type: 'result' };
+      const resultChunk: MessageChunk = {
+        type: 'result',
+        ...(retainTranscriptCapture && transcriptCapture
+          ? { captureRoot: transcriptCapture.directory }
+          : {}),
+      };
       if (options?.outputFormat?.type === 'json_schema') {
         const structuredOutput = tryParseStructuredOutput(content);
         if (structuredOutput !== undefined) {
@@ -157,8 +169,10 @@ export class AgyProvider implements IAgentProvider {
       }
       yield resultChunk;
     } finally {
-      if (transcriptCapture) {
+      if (transcriptCapture && !retainTranscriptCapture) {
         rmSync(transcriptCapture.directory, { recursive: true, force: true });
+      } else if (transcriptCapture) {
+        getLog().info({ captureRoot: transcriptCapture.directory }, 'agy.capture_retained');
       }
     }
   }
@@ -298,7 +312,7 @@ function startAgyPrint(
     // doing its final poll.
   });
 
-  return { done };
+  return { done, usesSupervisor: wrapped.usesSupervisor };
 }
 
 /**
@@ -327,7 +341,7 @@ function wrapWithSupervisor(
   spec: SupervisorSpec | undefined,
   captureRoot: string | undefined
 ): WrappedAgy {
-  if (!spec) return { command: binaryPath, args: agyArgs, env: environment };
+  if (!spec) return { command: binaryPath, args: agyArgs, env: environment, usesSupervisor: false };
   if (!captureRoot) {
     throw new OsJailUnavailableError('OS-jailed AGY requires a private capture root');
   }
@@ -343,7 +357,7 @@ function wrapWithSupervisor(
           'refusing to run a fail_closed author unconfined'
       );
     }
-    return { command: binaryPath, args: agyArgs, env: environment };
+    return { command: binaryPath, args: agyArgs, env: environment, usesSupervisor: false };
   }
   // The trusted stage CLI owns policy construction.  Keep Archon as a router:
   // it receives the resolved per-instance path and prefixes the provider command.
@@ -361,6 +375,7 @@ function wrapWithSupervisor(
         ...agyArgs,
       ],
       env: environment,
+      usesSupervisor: true,
     };
   }
   const directory = mkdtempSync(join(tmpdir(), 'archon-zanco-policy-'));
@@ -392,6 +407,7 @@ function wrapWithSupervisor(
       ...agyArgs,
     ],
     env: environment,
+    usesSupervisor: true,
     cleanup: (): void => {
       rmSync(directory, { recursive: true, force: true });
     },
@@ -399,8 +415,31 @@ function wrapWithSupervisor(
 }
 
 function createTranscriptCapture(): AgyTranscriptCapture {
-  const directory = mkdtempSync(join(tmpdir(), 'archon-agy-'));
+  pruneExpiredTranscriptCaptures();
+  const directory = mkdtempSync(join(tmpdir(), AGY_CAPTURE_PREFIX));
   return { directory, logFilePath: join(directory, 'agy.log') };
+}
+
+function pruneExpiredTranscriptCaptures(now = Date.now()): void {
+  const retentionMs = captureRetentionMs();
+  for (const entry of readdirSync(tmpdir(), { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(AGY_CAPTURE_PREFIX)) continue;
+    const directory = join(tmpdir(), entry.name);
+    try {
+      if (now - statSync(directory).mtimeMs > retentionMs) {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    } catch (error) {
+      getLog().warn({ err: error, captureRoot: directory }, 'agy.capture_prune_failed');
+    }
+  }
+}
+
+function captureRetentionMs(): number {
+  const configured = Number(process.env.ARCHON_AGY_CAPTURE_RETENTION_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_AGY_CAPTURE_RETENTION_MS;
 }
 
 function waitForExit(child: ReturnType<typeof spawn>): Promise<AgyExit> {

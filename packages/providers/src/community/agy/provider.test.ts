@@ -1,6 +1,14 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, test } from 'bun:test';
 
 import type { MessageChunk, SendQueryOptions } from '../../types';
@@ -176,7 +184,14 @@ describe('AgyProvider', () => {
           },
         })
       );
-      expect(chunks).toEqual([{ type: 'assistant', content: 'jailed' }, { type: 'result' }]);
+      expect(chunks).toEqual([
+        { type: 'assistant', content: 'jailed' },
+        { type: 'result', captureRoot: expect.any(String) },
+      ]);
+      const result = chunks.at(-1);
+      if (result?.type === 'result' && result.captureRoot) {
+        rmSync(result.captureRoot, { recursive: true, force: true });
+      }
       const supervisorArgs = readFileSync(argsFile, 'utf8').trim().split('\n');
       expect(supervisorArgs).toContain('run');
       expect(supervisorArgs).toContain('--policy');
@@ -187,6 +202,76 @@ describe('AgyProvider', () => {
       if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
       else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
     }
+  });
+
+  test('retains an accounting capture after a supervised run completes', async () => {
+    const fakeAgy = writeExecutable('agy-retained-capture', '#!/bin/sh\nexit 0\n');
+    const fakeSupervisor = writeExecutable(
+      'retained-capture-supervisor',
+      `#!/bin/sh
+capture_root=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--capture-root" ]; then
+    shift
+    capture_root="$1"
+  fi
+  shift
+done
+mkdir -p "$capture_root/home/.config/antigravity"
+printf 'accounting metadata' > "$capture_root/home/.config/antigravity/gen_metadata"
+printf '%s' "jailed"
+`
+    );
+    const policy = join(tmpRoot, 'retained-capture-policy.json');
+    writeFileSync(policy, '{}');
+    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
+    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
+
+    try {
+      const chunks = await collect(
+        new AgyProvider().sendQuery('retain accounting', tmpRoot, undefined, {
+          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+          nodeConfig: {
+            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+          },
+        })
+      );
+      expect(chunks).toEqual([
+        { type: 'assistant', content: 'jailed' },
+        { type: 'result', captureRoot: expect.any(String) },
+      ]);
+      const result = chunks.at(-1);
+      if (result?.type !== 'result' || !result.captureRoot) {
+        throw new Error('supervised run did not expose its retained capture root');
+      }
+      const captureRoot = result.captureRoot;
+      const metadata = join(captureRoot, 'home', '.config', 'antigravity', 'gen_metadata');
+      expect(existsSync(metadata)).toBe(true);
+      expect(readFileSync(metadata, 'utf8')).toBe('accounting metadata');
+      rmSync(captureRoot, { recursive: true, force: true });
+    } finally {
+      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
+      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+    }
+  });
+
+  test('cleans up a transcript-only capture after an unsupervised run', async () => {
+    const argsFile = join(tmpRoot, 'unsupervised-transcript-args.txt');
+    const fakeAgy = writeExecutable(
+      'agy-unsupervised-transcript',
+      '#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done > "$AGY_ARGS_FILE"\nprintf "%s" "done"\n'
+    );
+
+    await collect(
+      new AgyProvider().sendQuery('transcript only', tmpRoot, undefined, {
+        env: { AGY_ARGS_FILE: argsFile },
+        assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: true },
+      })
+    );
+
+    const args = readFileSync(argsFile, 'utf8').trim().split('\n');
+    const logFilePath = args[args.indexOf('--log-file') + 1];
+    expect(existsSync(dirname(logFilePath))).toBe(false);
   });
 
   test('fails typed when bwrap is unavailable and fail_closed is set', async () => {
