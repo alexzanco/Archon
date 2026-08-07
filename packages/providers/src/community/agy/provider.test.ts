@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, test } from 'bun:test';
 
 import type { MessageChunk, SendQueryOptions } from '../../types';
-import { AgyProvider, OsJailUnavailableError } from './provider';
+import { AgyProvider, OsJailUnavailableError, assertModelPinHonoured } from './provider';
 import { readAgyToolChunksFromTranscript } from './transcript-tools';
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'archon-agy-provider-'));
@@ -198,6 +198,176 @@ describe('AgyProvider', () => {
       expect(supervisorArgs).toContain(policy);
       expect(supervisorArgs).toContain('--');
       expect(supervisorArgs).toContain(fakeAgy);
+      expect(supervisorArgs).not.toContain('--sandbox');
+    } finally {
+      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
+      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+    }
+  });
+
+  test('accepts the bootstrap fallback when AGY later resolves the pin', () => {
+    // Verbatim from run 670d7c62, where the pin WAS honoured. The fallback fires
+    // before auth, when the jailed HOME still has no cached model list; treating
+    // it alone as a downgrade discarded a correct artifact.
+    const honoured = [
+      'I0806 21:58:04.417746 resolver.go:85] Model ID gemini-3.6-flash-medium not in local config, defaulting to CCPA',
+      'I0806 21:58:04.938295 model_configs.go:59] Auth mode is unspecified, skipping fetchAvailableModels',
+      'I0806 21:58:06.417758 http_helpers.go:228] URL: .../v1internal:fetchAvailableModels',
+      'I0806 21:58:06.423278 model_resolver.go:73] Resolving model gemini-3.6-flash-medium',
+      'I0806 21:58:06.423315 model_config_manager.go:311] Propagating selected model override to backend: label="Gemini 3.6 Flash (Medium)"',
+    ].join('\n');
+    expect(() => assertModelPinHonoured('gemini-3.6-flash-medium', honoured)).not.toThrow();
+  });
+
+  test('refuses a pin that fell back and was never resolved', () => {
+    const downgraded =
+      'I0806 21:58:04.417746 resolver.go:85] Model ID gemini-3.6-flash-medium not in local config, defaulting to CCPA';
+    expect(() => assertModelPinHonoured('gemini-3.6-flash-medium', downgraded)).toThrow(
+      /did not honour requested model/
+    );
+  });
+
+  test('refuses a run whose pinned model AGY silently downgraded', async () => {
+    // The jailed HOME has no cached model config and auth never recovers, so the
+    // fallback stands with no later `Resolving model <id>` line.
+    const fakeAgy = writeExecutable(
+      'agy-downgraded-model',
+      '#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "--log-file" ]; then shift; printf "Model ID gemini-3.6-flash-medium not in local config, defaulting to CCPA\\n" > "$1"; fi\n  shift\ndone\nprintf "%s" "answered anyway"\n'
+    );
+    const fakeSupervisor = writeExecutable(
+      'downgraded-model-supervisor',
+      '#!/bin/sh\nshift\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
+    );
+    const policy = join(tmpRoot, 'downgraded-model-policy.json');
+    writeFileSync(policy, '{}');
+    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
+    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
+    try {
+      const attempt = collect(
+        new AgyProvider().sendQuery('pin me', tmpRoot, undefined, {
+          model: 'gemini-3.6-flash-medium',
+          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+          nodeConfig: {
+            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+          },
+        })
+      );
+      await expect(attempt).rejects.toThrow(/did not honour requested model/);
+    } finally {
+      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
+      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+    }
+  });
+
+  test('seeds the AGY OAuth token into the supervisor when the host has one', async () => {
+    const fakeAgy = writeExecutable('agy-seeded', '#!/bin/sh\nprintf "%s" "seeded"\n');
+    const fakeSupervisor = writeExecutable(
+      'seeded-supervisor',
+      '#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done > "$SUPERVISOR_ARGS_FILE"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
+    );
+    const policy = join(tmpRoot, 'seeded-policy.json');
+    const argsFile = join(tmpRoot, 'seeded-args.txt');
+    writeFileSync(policy, '{}');
+    const fakeHome = join(tmpRoot, 'seeded-home');
+    const tokenPath = join(fakeHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+    mkdirSync(dirname(tokenPath), { recursive: true });
+    writeFileSync(tokenPath, 'host-token');
+    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
+    const previousHome = process.env.HOME;
+    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
+    process.env.HOME = fakeHome;
+    try {
+      const chunks = await collect(
+        new AgyProvider().sendQuery('seed me', tmpRoot, undefined, {
+          env: { SUPERVISOR_ARGS_FILE: argsFile },
+          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+          nodeConfig: {
+            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+          },
+        })
+      );
+      const result = chunks.at(-1);
+      if (result?.type === 'result' && result.captureRoot) {
+        rmSync(result.captureRoot, { recursive: true, force: true });
+      }
+      const supervisorArgs = readFileSync(argsFile, 'utf8').trim().split('\n');
+      expect(supervisorArgs).toContain('--seed-file');
+      expect(supervisorArgs).toContain(
+        `${tokenPath}:.gemini/antigravity-cli/antigravity-oauth-token`
+      );
+      // The seed must precede the `--` that ends supervisor arguments.
+      expect(supervisorArgs.indexOf('--seed-file')).toBeLessThan(supervisorArgs.indexOf('--'));
+    } finally {
+      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
+      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('passes no seed when the host has no AGY token', async () => {
+    const fakeAgy = writeExecutable('agy-unseeded', '#!/bin/sh\nprintf "%s" "unseeded"\n');
+    const fakeSupervisor = writeExecutable(
+      'unseeded-supervisor',
+      '#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done > "$SUPERVISOR_ARGS_FILE"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
+    );
+    const policy = join(tmpRoot, 'unseeded-policy.json');
+    const argsFile = join(tmpRoot, 'unseeded-args.txt');
+    writeFileSync(policy, '{}');
+    const emptyHome = join(tmpRoot, 'empty-home');
+    mkdirSync(emptyHome, { recursive: true });
+    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
+    const previousHome = process.env.HOME;
+    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
+    process.env.HOME = emptyHome;
+    try {
+      const chunks = await collect(
+        new AgyProvider().sendQuery('no seed', tmpRoot, undefined, {
+          env: { SUPERVISOR_ARGS_FILE: argsFile },
+          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+          nodeConfig: {
+            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+          },
+        })
+      );
+      const result = chunks.at(-1);
+      if (result?.type === 'result' && result.captureRoot) {
+        rmSync(result.captureRoot, { recursive: true, force: true });
+      }
+      expect(readFileSync(argsFile, 'utf8')).not.toContain('--seed-file');
+    } finally {
+      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
+      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('keeps an explicitly enabled provider sandbox inside an OS jail', async () => {
+    const fakeAgy = writeExecutable(
+      'agy-explicit-inner-sandbox',
+      '#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done > "$AGY_ARGS_FILE"\n'
+    );
+    const fakeSupervisor = writeExecutable(
+      'explicit-inner-sandbox-supervisor',
+      '#!/bin/sh\nshift\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
+    );
+    const policy = join(tmpRoot, 'explicit-inner-sandbox-policy.json');
+    const argsFile = join(tmpRoot, 'explicit-inner-sandbox-args.txt');
+    writeFileSync(policy, '{}');
+    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
+    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
+    try {
+      await collect(
+        new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
+          env: { AGY_ARGS_FILE: argsFile },
+          assistantConfig: { agyBinaryPath: fakeAgy, sandbox: true, transcriptToolEvents: false },
+          nodeConfig: {
+            sandbox: { os: 'bwrap', enabled: true, policy_path: policy, fail_closed: true },
+          },
+        })
+      );
+      expect(readFileSync(argsFile, 'utf8')).toContain('--sandbox');
     } finally {
       if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
       else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;

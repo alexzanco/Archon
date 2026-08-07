@@ -1,5 +1,13 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createLogger } from '@archon/paths';
@@ -144,6 +152,12 @@ export class AgyProvider implements IAgentProvider {
 
       const result = await run.done;
       const combinedOutput = `${result.stdout}\n${result.stderr}`;
+      if (runOptions.model && transcriptCapture && existsSync(transcriptCapture.logFilePath)) {
+        assertModelPinHonoured(
+          runOptions.model,
+          readFileSync(transcriptCapture.logFilePath, 'utf8')
+        );
+      }
       if (isAgyAuthFailure(combinedOutput)) {
         throw new Error(formatAgyAuthError());
       }
@@ -186,15 +200,50 @@ export class AgyProvider implements IAgentProvider {
   }
 }
 
+/**
+ * Throw only when AGY fell back to a default model and never recovered.
+ *
+ * AGY logs `Model ID <id> not in local config, defaulting to ...` during
+ * bootstrap, before it authenticates: the jailed HOME has no cached model list
+ * yet, so the first resolution attempt necessarily misses. It then calls
+ * `fetchAvailableModels` and resolves the pin for real, roughly two seconds
+ * later. Treating the bootstrap line alone as proof of a downgrade failed run
+ * 670d7c62 after the author had already produced a correct artifact, on a run
+ * where the model *was* honoured:
+ *
+ *   21:58:04.417  Model ID gemini-3.6-flash-medium not in local config, defaulting to CCPA
+ *   21:58:04.938  Auth mode is unspecified, skipping fetchAvailableModels
+ *   21:58:06.423  Resolving model gemini-3.6-flash-medium
+ *   21:58:06.423  Propagating selected model override: label="Gemini 3.6 Flash (Medium)"
+ *
+ * A genuine downgrade shows the fallback with no later resolution of that id.
+ */
+export function assertModelPinHonoured(model: string, transcriptLog: string): void {
+  if (!transcriptLog.includes('not in local config, defaulting to')) return;
+  if (transcriptLog.includes(`Resolving model ${model}`)) return;
+  throw new Error(`AGY did not honour requested model ${model}; the model pin was not honoured.`);
+}
+
 function resolveRunOptions(
   config: AgyProviderDefaults,
   options: SendQueryOptions | undefined
 ): AgyRunOptions {
   const nodeConfig = options?.nodeConfig;
+  const supervisor = resolveSupervisor(nodeConfig?.sandbox);
+  const nodeSandbox = nodeConfig?.sandbox;
+  const providerSandbox = resolveSandbox(nodeSandbox, config.sandbox);
   return {
     model: options?.model ?? stringFromNode(nodeConfig?.model) ?? config.model,
     printTimeout: stringFromNode(nodeConfig?.printTimeout) ?? config.printTimeout,
-    sandbox: resolveSandbox(nodeConfig?.sandbox, config.sandbox),
+    sandbox:
+      supervisor &&
+      !(
+        nodeSandbox &&
+        typeof nodeSandbox === 'object' &&
+        (nodeSandbox as Record<string, unknown>).enabled === true
+      )
+        ? false
+        : providerSandbox,
     dangerouslySkipPermissions:
       booleanFromNode(nodeConfig?.dangerouslySkipPermissions) ??
       booleanFromNode(nodeConfig?.dangerously_skip_permissions) ??
@@ -205,7 +254,7 @@ function resolveRunOptions(
       booleanFromNode(nodeConfig?.transcript_tool_events) ??
       config.transcriptToolEvents ??
       true,
-    supervisor: resolveSupervisor(nodeConfig?.sandbox),
+    supervisor,
     additionalDirectories: [
       ...(config.additionalDirectories ?? []),
       ...stringArrayFromNode(nodeConfig?.additionalDirectories),
@@ -359,6 +408,13 @@ function wrapWithSupervisor(
     }
     return { command: binaryPath, args: agyArgs, env: environment, usesSupervisor: false };
   }
+  const tokenPath = process.env.HOME
+    ? join(process.env.HOME, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
+    : undefined;
+  const seedArgs =
+    tokenPath && existsSync(tokenPath)
+      ? ['--seed-file', `${tokenPath}:.gemini/antigravity-cli/antigravity-oauth-token`]
+      : [];
   // The trusted stage CLI owns policy construction.  Keep Archon as a router:
   // it receives the resolved per-instance path and prefixes the provider command.
   if (spec.policyPath) {
@@ -370,6 +426,7 @@ function wrapWithSupervisor(
         spec.policyPath,
         '--capture-root',
         captureRoot,
+        ...seedArgs,
         '--',
         binaryPath,
         ...agyArgs,
@@ -402,6 +459,7 @@ function wrapWithSupervisor(
       policyPath,
       '--capture-root',
       captureRoot,
+      ...seedArgs,
       '--',
       binaryPath,
       ...agyArgs,
@@ -470,7 +528,7 @@ function resolveSandbox(rawSandbox: unknown, configSandbox: boolean | undefined)
   if (rawSandbox && typeof rawSandbox === 'object') {
     const record = rawSandbox as Record<string, unknown>;
     if (typeof record.enabled === 'boolean') return record.enabled;
-    return true;
+    if (record.os !== undefined) return false;
   }
   return configSandbox ?? false;
 }
