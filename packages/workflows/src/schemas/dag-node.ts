@@ -83,14 +83,6 @@ export const sandboxSettingsSchema = z
     policy_path: z.string().min(1).optional(),
     /** Explicit consumer-owned executable that creates the broker factory. */
     supervisor_bin: z.string().min(1).optional(),
-    packet: z.string().min(1).optional(),
-    rw_output: z.string().min(1).optional(),
-    capabilities: z.array(z.string().min(1)).optional(),
-    run_id: z.string().min(1).optional(),
-    stage: z.string().min(1).optional(),
-    item_key: z.string().min(1).optional(),
-    external_id: z.string().min(1).optional(),
-    net: z.boolean().optional(),
     fail_closed: z.boolean().optional(),
     enabled: z.boolean().optional(),
     autoAllowBashIfSandboxed: z.boolean().optional(),
@@ -124,7 +116,38 @@ export const sandboxSettingsSchema = z
       })
       .optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((sandbox, context) => {
+    if (sandbox.os === 'bwrap') {
+      for (const field of ['policy_path', 'supervisor_bin'] as const) {
+        if (!sandbox[field]) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field],
+            message: `sandbox.os=bwrap requires ${field}`,
+          });
+        }
+      }
+    }
+    for (const field of [
+      'packet',
+      'rw_output',
+      'capabilities',
+      'run_id',
+      'stage',
+      'item_key',
+      'external_id',
+      'net',
+    ]) {
+      if (field in sandbox) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `sandbox.${field} is not supported`,
+        });
+      }
+    }
+  });
 
 export type SandboxSettings = z.infer<typeof sandboxSettingsSchema>;
 
@@ -378,7 +401,13 @@ export type CancelNode = z.infer<typeof cancelNodeSchema> & {
 
 /** A single node in a DAG workflow. command, prompt, bash, loop, approval, cancel, and script are mutually exclusive. */
 export type DagNode =
-  CommandNode | PromptNode | BashNode | LoopNode | ApprovalNode | CancelNode | ScriptNode;
+  | CommandNode
+  | PromptNode
+  | BashNode
+  | LoopNode
+  | ApprovalNode
+  | CancelNode
+  | ScriptNode;
 
 // ---------------------------------------------------------------------------
 // AI-specific fields that are meaningless on non-AI nodes

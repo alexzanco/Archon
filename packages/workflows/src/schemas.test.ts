@@ -332,15 +332,68 @@ describe('dagNodeSchema — loop completion and prompt sources', () => {
     const node = dagNodeSchema.parse({
       id: 'curate-1',
       model: 'Gemini 3.5 Flash (Medium)',
-      sandbox: { os: 'bwrap', policy_path: '$stage-1.output.policyPath', fail_closed: true },
+      sandbox: {
+        os: 'bwrap',
+        policy_path: '$stage-1.output.policyPath',
+        supervisor_bin: '$stage-1.output.supervisorBinary',
+        fail_closed: true,
+      },
       loop: { command: 'curate-entity', max_iterations: 3, until_bash: 'exit 0' },
     });
     expect(node.sandbox).toEqual({
       os: 'bwrap',
       policy_path: '$stage-1.output.policyPath',
+      supervisor_bin: '$stage-1.output.supervisorBinary',
       fail_closed: true,
     });
     expect(node.model).toBe('Gemini 3.5 Flash (Medium)');
+  });
+
+  test.each(['policy_path', 'supervisor_bin'] as const)(
+    'rejects a bwrap node without %s',
+    missingField => {
+      const sandbox: Record<string, unknown> = {
+        os: 'bwrap',
+        policy_path: '$stage.output.policyPath',
+        supervisor_bin: '$stage.output.supervisorBinary',
+      };
+      delete sandbox[missingField];
+      const result = dagNodeSchema.safeParse({
+        id: 'curate',
+        prompt: 'Curate',
+        sandbox,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some(issue => issue.message.includes(missingField))).toBe(true);
+      }
+    }
+  );
+
+  test.each([
+    'packet',
+    'rw_output',
+    'capabilities',
+    'run_id',
+    'stage',
+    'item_key',
+    'external_id',
+    'net',
+  ])('rejects removed OS-jail field %s', field => {
+    const result = dagNodeSchema.safeParse({
+      id: 'curate',
+      prompt: 'Curate',
+      sandbox: {
+        os: 'bwrap',
+        policy_path: '$stage.output.policyPath',
+        supervisor_bin: '$stage.output.supervisorBinary',
+        [field]: 'old value',
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some(issue => issue.message.includes(field))).toBe(true);
+    }
   });
 });
 

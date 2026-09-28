@@ -1,13 +1,5 @@
 import { spawn } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createLogger } from '@archon/paths';
@@ -39,17 +31,9 @@ interface AgyRunOptions {
 
 interface SupervisorSpec {
   /** A policy assembled by the trusted staging CLI for this exact instance. */
-  policyPath?: string;
+  policyPath: string;
   /** An explicit consumer-owned supervisor executable, never an import path. */
-  supervisorBin?: string;
-  runId?: string;
-  stage?: string;
-  itemKey?: string;
-  externalId?: string;
-  packet?: string;
-  rwOutput?: string;
-  capabilities?: string[];
-  networkEnabled?: boolean;
+  supervisorBin: string;
   failClosed: boolean;
 }
 
@@ -81,7 +65,6 @@ interface WrappedAgy {
   command: string;
   args: string[];
   env: Record<string, string>;
-  cleanup?: () => void;
   usesSupervisor: boolean;
 }
 
@@ -352,7 +335,6 @@ function startAgyPrint(
     return { stdout, stderr };
   })().finally(() => {
     abortSignal?.removeEventListener('abort', onAbort);
-    wrapped.cleanup?.();
   });
 
   done.catch(() => {
@@ -370,14 +352,13 @@ function startAgyPrint(
  * Returns undefined when nothing executable is found; callers decide whether that
  * is fatal (fail_closed) or a permitted unconfined fallback.
  */
-function resolveSupervisorBinary(requested?: string): string | undefined {
-  const configured = requested ?? process.env.ZANCO_SANDBOX_BIN ?? 'zanco-sandbox';
-  if (configured.includes('/')) {
-    return existsSync(configured) ? configured : undefined;
+function resolveSupervisorBinary(requested: string): string | undefined {
+  if (requested.includes('/')) {
+    return existsSync(requested) ? requested : undefined;
   }
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
-    const candidate = join(dir, configured);
+    const candidate = join(dir, requested);
     if (existsSync(candidate)) return candidate;
   }
   return undefined;
@@ -397,12 +378,10 @@ function wrapWithSupervisor(
   const supervisorPath = resolveSupervisorBinary(spec.supervisorBin);
   if (!supervisorPath) {
     // A fail_closed node must never silently run unconfined when its enforcement
-    // binary cannot be resolved. This covers a bare `zanco-sandbox` that is not on
-    // PATH — the exact gap that let authors run unjailed in the 2026-07-22
-    // rehearsal even though the jail was fully wired on every side.
+    // binary cannot be resolved.
     if (spec.failClosed) {
       throw new OsJailUnavailableError(
-        'zanco-sandbox is unavailable (checked ZANCO_SANDBOX_BIN and PATH); ' +
+        `supervisor binary ${spec.supervisorBin} is unavailable; ` +
           'refusing to run a fail_closed author unconfined'
       );
     }
@@ -417,46 +396,12 @@ function wrapWithSupervisor(
       : [];
   // The trusted stage CLI owns policy construction.  Keep Archon as a router:
   // it receives the resolved per-instance path and prefixes the provider command.
-  if (spec.policyPath) {
-    return {
-      command: supervisorPath,
-      args: [
-        'run',
-        '--policy',
-        spec.policyPath,
-        '--capture-root',
-        captureRoot,
-        ...seedArgs,
-        '--',
-        binaryPath,
-        ...agyArgs,
-      ],
-      env: environment,
-      usesSupervisor: true,
-    };
-  }
-  const directory = mkdtempSync(join(tmpdir(), 'archon-zanco-policy-'));
-  const policyPath = join(directory, 'policy.json');
-  writeFileSync(
-    policyPath,
-    JSON.stringify({
-      run_id: spec.runId,
-      stage: spec.stage,
-      item_key: spec.itemKey,
-      external_id: spec.externalId,
-      packet: spec.packet,
-      rw_output: spec.rwOutput,
-      capabilities: spec.capabilities,
-      net: spec.networkEnabled,
-      fail_closed: spec.failClosed,
-    })
-  );
   return {
     command: supervisorPath,
     args: [
       'run',
       '--policy',
-      policyPath,
+      spec.policyPath,
       '--capture-root',
       captureRoot,
       ...seedArgs,
@@ -466,9 +411,6 @@ function wrapWithSupervisor(
     ],
     env: environment,
     usesSupervisor: true,
-    cleanup: (): void => {
-      rmSync(directory, { recursive: true, force: true });
-    },
   };
 }
 
@@ -539,33 +481,10 @@ function resolveSupervisor(rawSandbox: unknown): SupervisorSpec | undefined {
   if (sandbox.os !== 'bwrap') return undefined;
   const policyPath = stringFromNode(sandbox.policy_path);
   const supervisorBin = stringFromNode(sandbox.supervisor_bin);
-  if (policyPath) {
-    return { policyPath, supervisorBin, failClosed: sandbox.fail_closed !== false };
+  if (!policyPath || !supervisorBin) {
+    throw new OsJailUnavailableError('sandbox.os=bwrap requires policy_path and supervisor_bin');
   }
-  const packet = stringFromNode(sandbox.packet);
-  const rwOutput = stringFromNode(sandbox.rw_output);
-  const runId = stringFromNode(sandbox.run_id);
-  const stage = stringFromNode(sandbox.stage);
-  const itemKey = stringFromNode(sandbox.item_key);
-  const externalId = stringFromNode(sandbox.external_id);
-  const capabilities = stringArrayFromNode(sandbox.capabilities);
-  if (!packet || !rwOutput || !runId || !stage || !itemKey || !externalId || !capabilities.length) {
-    throw new OsJailUnavailableError(
-      'sandbox.os=bwrap requires resolved packet, rw_output, run_id, stage, item_key, external_id, and capabilities'
-    );
-  }
-  return {
-    runId,
-    stage,
-    itemKey,
-    supervisorBin,
-    externalId,
-    packet,
-    rwOutput,
-    capabilities,
-    networkEnabled: sandbox.net === true,
-    failClosed: sandbox.fail_closed !== false,
-  };
+  return { policyPath, supervisorBin, failClosed: sandbox.fail_closed !== false };
 }
 
 function stringFromNode(value: unknown): string | undefined {

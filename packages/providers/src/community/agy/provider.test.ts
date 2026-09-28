@@ -160,49 +160,38 @@ describe('AgyProvider', () => {
       'supervisor-args',
       '#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done > "$SUPERVISOR_ARGS_FILE"\nprintf "%s" "jailed"\n'
     );
-    const packet = join(tmpRoot, 'packet.json');
-    const output = join(tmpRoot, 'jail-output');
     const policy = join(tmpRoot, 'stage-policy.json');
     const argsFile = join(tmpRoot, 'supervisor-args.txt');
-    writeFileSync(packet, '{}');
     writeFileSync(policy, '{}');
-    mkdirSync(output, { recursive: true });
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
-    process.env.ZANCO_SANDBOX_BIN = fakeBwrap;
-
-    try {
-      const chunks = await collect(
-        new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
-          env: { SUPERVISOR_ARGS_FILE: argsFile },
-          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
-          nodeConfig: {
-            sandbox: {
-              os: 'bwrap',
-              policy_path: policy,
-              fail_closed: true,
-            },
+    const chunks = await collect(
+      new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
+        env: { SUPERVISOR_ARGS_FILE: argsFile },
+        assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+        nodeConfig: {
+          sandbox: {
+            os: 'bwrap',
+            policy_path: policy,
+            supervisor_bin: fakeBwrap,
+            fail_closed: true,
           },
-        })
-      );
-      expect(chunks).toEqual([
-        { type: 'assistant', content: 'jailed' },
-        { type: 'result', captureRoot: expect.any(String) },
-      ]);
-      const result = chunks.at(-1);
-      if (result?.type === 'result' && result.captureRoot) {
-        rmSync(result.captureRoot, { recursive: true, force: true });
-      }
-      const supervisorArgs = readFileSync(argsFile, 'utf8').trim().split('\n');
-      expect(supervisorArgs).toContain('run');
-      expect(supervisorArgs).toContain('--policy');
-      expect(supervisorArgs).toContain(policy);
-      expect(supervisorArgs).toContain('--');
-      expect(supervisorArgs).toContain(fakeAgy);
-      expect(supervisorArgs).not.toContain('--sandbox');
-    } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+        },
+      })
+    );
+    expect(chunks).toEqual([
+      { type: 'assistant', content: 'jailed' },
+      { type: 'result', captureRoot: expect.any(String) },
+    ]);
+    const result = chunks.at(-1);
+    if (result?.type === 'result' && result.captureRoot) {
+      rmSync(result.captureRoot, { recursive: true, force: true });
     }
+    const supervisorArgs = readFileSync(argsFile, 'utf8').trim().split('\n');
+    expect(supervisorArgs).toContain('run');
+    expect(supervisorArgs).toContain('--policy');
+    expect(supervisorArgs).toContain(policy);
+    expect(supervisorArgs).toContain('--');
+    expect(supervisorArgs).toContain(fakeAgy);
+    expect(supervisorArgs).not.toContain('--sandbox');
   });
 
   test('accepts the bootstrap fallback when AGY later resolves the pin', () => {
@@ -240,23 +229,21 @@ describe('AgyProvider', () => {
     );
     const policy = join(tmpRoot, 'downgraded-model-policy.json');
     writeFileSync(policy, '{}');
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
-    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
-    try {
-      const attempt = collect(
-        new AgyProvider().sendQuery('pin me', tmpRoot, undefined, {
-          model: 'gemini-3.6-flash-medium',
-          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
-          nodeConfig: {
-            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+    const attempt = collect(
+      new AgyProvider().sendQuery('pin me', tmpRoot, undefined, {
+        model: 'gemini-3.6-flash-medium',
+        assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+        nodeConfig: {
+          sandbox: {
+            os: 'bwrap',
+            policy_path: policy,
+            supervisor_bin: fakeSupervisor,
+            fail_closed: true,
           },
-        })
-      );
-      await expect(attempt).rejects.toThrow(/did not honour requested model/);
-    } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
-    }
+        },
+      })
+    );
+    await expect(attempt).rejects.toThrow(/did not honour requested model/);
   });
 
   test('seeds the AGY OAuth token into the supervisor when the host has one', async () => {
@@ -272,9 +259,7 @@ describe('AgyProvider', () => {
     const tokenPath = join(fakeHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
     mkdirSync(dirname(tokenPath), { recursive: true });
     writeFileSync(tokenPath, 'host-token');
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
     const previousHome = process.env.HOME;
-    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
     process.env.HOME = fakeHome;
     try {
       const chunks = await collect(
@@ -282,7 +267,12 @@ describe('AgyProvider', () => {
           env: { SUPERVISOR_ARGS_FILE: argsFile },
           assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
           nodeConfig: {
-            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+            sandbox: {
+              os: 'bwrap',
+              policy_path: policy,
+              supervisor_bin: fakeSupervisor,
+              fail_closed: true,
+            },
           },
         })
       );
@@ -298,8 +288,6 @@ describe('AgyProvider', () => {
       // The seed must precede the `--` that ends supervisor arguments.
       expect(supervisorArgs.indexOf('--seed-file')).toBeLessThan(supervisorArgs.indexOf('--'));
     } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
     }
@@ -316,9 +304,7 @@ describe('AgyProvider', () => {
     writeFileSync(policy, '{}');
     const emptyHome = join(tmpRoot, 'empty-home');
     mkdirSync(emptyHome, { recursive: true });
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
     const previousHome = process.env.HOME;
-    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
     process.env.HOME = emptyHome;
     try {
       const chunks = await collect(
@@ -326,7 +312,12 @@ describe('AgyProvider', () => {
           env: { SUPERVISOR_ARGS_FILE: argsFile },
           assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
           nodeConfig: {
-            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+            sandbox: {
+              os: 'bwrap',
+              policy_path: policy,
+              supervisor_bin: fakeSupervisor,
+              fail_closed: true,
+            },
           },
         })
       );
@@ -336,8 +327,6 @@ describe('AgyProvider', () => {
       }
       expect(readFileSync(argsFile, 'utf8')).not.toContain('--seed-file');
     } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
     }
@@ -355,23 +344,22 @@ describe('AgyProvider', () => {
     const policy = join(tmpRoot, 'explicit-inner-sandbox-policy.json');
     const argsFile = join(tmpRoot, 'explicit-inner-sandbox-args.txt');
     writeFileSync(policy, '{}');
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
-    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
-    try {
-      await collect(
-        new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
-          env: { AGY_ARGS_FILE: argsFile },
-          assistantConfig: { agyBinaryPath: fakeAgy, sandbox: true, transcriptToolEvents: false },
-          nodeConfig: {
-            sandbox: { os: 'bwrap', enabled: true, policy_path: policy, fail_closed: true },
+    await collect(
+      new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
+        env: { AGY_ARGS_FILE: argsFile },
+        assistantConfig: { agyBinaryPath: fakeAgy, sandbox: true, transcriptToolEvents: false },
+        nodeConfig: {
+          sandbox: {
+            os: 'bwrap',
+            enabled: true,
+            policy_path: policy,
+            supervisor_bin: fakeSupervisor,
+            fail_closed: true,
           },
-        })
-      );
-      expect(readFileSync(argsFile, 'utf8')).toContain('--sandbox');
-    } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
-    }
+        },
+      })
+    );
+    expect(readFileSync(argsFile, 'utf8')).toContain('--sandbox');
   });
 
   test('retains an accounting capture after a supervised run completes', async () => {
@@ -394,35 +382,32 @@ printf '%s' "jailed"
     );
     const policy = join(tmpRoot, 'retained-capture-policy.json');
     writeFileSync(policy, '{}');
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
-    process.env.ZANCO_SANDBOX_BIN = fakeSupervisor;
-
-    try {
-      const chunks = await collect(
-        new AgyProvider().sendQuery('retain accounting', tmpRoot, undefined, {
-          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
-          nodeConfig: {
-            sandbox: { os: 'bwrap', policy_path: policy, fail_closed: true },
+    const chunks = await collect(
+      new AgyProvider().sendQuery('retain accounting', tmpRoot, undefined, {
+        assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+        nodeConfig: {
+          sandbox: {
+            os: 'bwrap',
+            policy_path: policy,
+            supervisor_bin: fakeSupervisor,
+            fail_closed: true,
           },
-        })
-      );
-      expect(chunks).toEqual([
-        { type: 'assistant', content: 'jailed' },
-        { type: 'result', captureRoot: expect.any(String) },
-      ]);
-      const result = chunks.at(-1);
-      if (result?.type !== 'result' || !result.captureRoot) {
-        throw new Error('supervised run did not expose its retained capture root');
-      }
-      const captureRoot = result.captureRoot;
-      const metadata = join(captureRoot, 'home', '.config', 'antigravity', 'gen_metadata');
-      expect(existsSync(metadata)).toBe(true);
-      expect(readFileSync(metadata, 'utf8')).toBe('accounting metadata');
-      rmSync(captureRoot, { recursive: true, force: true });
-    } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
+        },
+      })
+    );
+    expect(chunks).toEqual([
+      { type: 'assistant', content: 'jailed' },
+      { type: 'result', captureRoot: expect.any(String) },
+    ]);
+    const result = chunks.at(-1);
+    if (result?.type !== 'result' || !result.captureRoot) {
+      throw new Error('supervised run did not expose its retained capture root');
     }
+    const captureRoot = result.captureRoot;
+    const metadata = join(captureRoot, 'home', '.config', 'antigravity', 'gen_metadata');
+    expect(existsSync(metadata)).toBe(true);
+    expect(readFileSync(metadata, 'utf8')).toBe('accounting metadata');
+    rmSync(captureRoot, { recursive: true, force: true });
   });
 
   test('cleans up a transcript-only capture after an unsupervised run', async () => {
@@ -446,57 +431,38 @@ printf '%s' "jailed"
 
   test('fails typed when bwrap is unavailable and fail_closed is set', async () => {
     const fakeAgy = writeExecutable('agy-missing-bwrap', '#!/bin/sh\nexit 0\n');
-    const packet = join(tmpRoot, 'missing-bwrap-packet.json');
-    const output = join(tmpRoot, 'missing-bwrap-output');
-    writeFileSync(packet, '{}');
-    mkdirSync(output, { recursive: true });
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
-    process.env.ZANCO_SANDBOX_BIN = join(tmpRoot, 'not-supervisor');
+    const policy = join(tmpRoot, 'missing-bwrap-policy.json');
+    writeFileSync(policy, '{}');
+    const supervisorBin = join(tmpRoot, 'not-supervisor');
 
-    try {
-      await expect(
-        collect(
-          new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
-            assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
-            nodeConfig: {
-              sandbox: {
-                os: 'bwrap',
-                packet,
-                rw_output: output,
-                run_id: 'run-1',
-                stage: 'curate',
-                item_key: 'slot-1',
-                external_id: 'ext-1',
-                capabilities: ['source.get-slice'],
-                fail_closed: true,
-              },
+    await expect(
+      collect(
+        new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
+          assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+          nodeConfig: {
+            sandbox: {
+              os: 'bwrap',
+              policy_path: policy,
+              supervisor_bin: supervisorBin,
+              fail_closed: true,
             },
-          })
-        )
-      ).rejects.toBeInstanceOf(OsJailUnavailableError);
-    } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
-    }
+          },
+        })
+      )
+    ).rejects.toMatchObject({
+      code: 'OS_JAIL_UNAVAILABLE',
+      message: expect.stringContaining(`supervisor binary ${supervisorBin} is unavailable`),
+    });
   });
 
   test('fails typed when supervisor is a bare command absent from PATH and fail_closed is set', async () => {
-    // Regression for the 2026-07-22 rehearsal: ZANCO_SANDBOX_BIN unset defaults to
-    // the bare name `zanco-sandbox`. The old guard only checked paths containing a
-    // slash, so a bare command missing from PATH bypassed fail-closed and the
-    // author ran unconfined. Point PATH at a directory without the binary.
+    // A bare supervisor name absent from PATH must fail closed.
     const fakeAgy = writeExecutable('agy-bare-supervisor', '#!/bin/sh\nexit 0\n');
-    const packet = join(tmpRoot, 'bare-supervisor-packet.json');
-    const output = join(tmpRoot, 'bare-supervisor-output');
     const policy = join(tmpRoot, 'bare-supervisor-policy.json');
-    writeFileSync(packet, '{}');
     writeFileSync(policy, '{}');
-    mkdirSync(output, { recursive: true });
     const emptyBinDir = join(tmpRoot, 'empty-bin');
     mkdirSync(emptyBinDir, { recursive: true });
-    const previousSupervisorPath = process.env.ZANCO_SANDBOX_BIN;
     const previousPath = process.env.PATH;
-    delete process.env.ZANCO_SANDBOX_BIN;
     process.env.PATH = emptyBinDir;
 
     try {
@@ -508,6 +474,7 @@ printf '%s' "jailed"
               sandbox: {
                 os: 'bwrap',
                 policy_path: policy,
+                supervisor_bin: 'absent-supervisor',
                 fail_closed: true,
               },
             },
@@ -515,12 +482,31 @@ printf '%s' "jailed"
         )
       ).rejects.toBeInstanceOf(OsJailUnavailableError);
     } finally {
-      if (previousSupervisorPath === undefined) delete process.env.ZANCO_SANDBOX_BIN;
-      else process.env.ZANCO_SANDBOX_BIN = previousSupervisorPath;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
     }
   });
+
+  test.each(['policy_path', 'supervisor_bin'] as const)(
+    'rejects a bwrap node without %s',
+    async missingField => {
+      const fakeAgy = writeExecutable(`agy-missing-${missingField}`, '#!/bin/sh\nexit 0\n');
+      const sandbox: Record<string, unknown> = {
+        os: 'bwrap',
+        policy_path: join(tmpRoot, 'policy.json'),
+        supervisor_bin: join(tmpRoot, 'supervisor'),
+      };
+      delete sandbox[missingField];
+      await expect(
+        collect(
+          new AgyProvider().sendQuery('jail me', tmpRoot, undefined, {
+            assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+            nodeConfig: { sandbox },
+          })
+        )
+      ).rejects.toBeInstanceOf(OsJailUnavailableError);
+    }
+  );
 
   test('emits best-effort tool chunks from AGY transcript logs', async () => {
     const conversationId = 'ab880491-881c-47be-8553-928097aced5f';
