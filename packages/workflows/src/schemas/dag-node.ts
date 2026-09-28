@@ -401,13 +401,7 @@ export type CancelNode = z.infer<typeof cancelNodeSchema> & {
 
 /** A single node in a DAG workflow. command, prompt, bash, loop, approval, cancel, and script are mutually exclusive. */
 export type DagNode =
-  | CommandNode
-  | PromptNode
-  | BashNode
-  | LoopNode
-  | ApprovalNode
-  | CancelNode
-  | ScriptNode;
+  CommandNode | PromptNode | BashNode | LoopNode | ApprovalNode | CancelNode | ScriptNode;
 
 // ---------------------------------------------------------------------------
 // AI-specific fields that are meaningless on non-AI nodes
