@@ -2905,7 +2905,9 @@ async function executeLoopNode(
           true, // escapedForBash
           logDir
         );
-        const untilBashTimeout = node.timeout ?? node.idle_timeout ?? SUBPROCESS_DEFAULT_TIMEOUT;
+        // Loop nodes carry no `timeout` field (loopNodeSchema has none), so the
+        // node's idle_timeout is the only per-node ceiling a gate can inherit.
+        const untilBashTimeout = node.idle_timeout ?? SUBPROCESS_DEFAULT_TIMEOUT;
         const bashResult = await execFileAsync('bash', ['-c', substitutedBash], {
           cwd,
           timeout: untilBashTimeout,
