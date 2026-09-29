@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,6 +69,8 @@ describe('AgyProvider', () => {
       '10s',
       '--sandbox',
       '--dangerously-skip-permissions',
+      '--log-file',
+      expect.stringMatching(/\/archon-agy-[^/]+\/agy\.log$/),
       '--add-dir',
       '/extra/config',
       '--add-dir',
@@ -151,6 +154,8 @@ describe('AgyProvider', () => {
       'Gemini 3.1 Pro (High)',
       '--print-timeout',
       '1m0s',
+      '--log-file',
+      expect.stringMatching(/\/archon-agy-[^/]+\/agy\.log$/),
     ]);
   });
 
@@ -410,6 +415,179 @@ printf '%s' "jailed"
     rmSync(captureRoot, { recursive: true, force: true });
   });
 
+  test('resumes a jailed conversation in its original isolated HOME without replaying tool rows', async () => {
+    const conversationId = '53cdf114-330e-447e-99ec-d242a3d2bb8f';
+    const fakeAgy = writeExecutable(
+      'agy-resume',
+      `#!/bin/sh
+log_file=""
+resumed="false"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--log-file" ]; then shift; log_file="$1"; fi
+  if [ "$1" = "--conversation" ]; then shift; resumed="true"; printf '%s' "$1" > "$HOME/resumed-id"; fi
+  shift
+done
+printf '%s\\n' "$HOME" >> "$AGY_HOMES_FILE"
+printf 'CLI app data directory: %s\\nPrint mode: conversation=%s, sending message\\n' "$HOME/.gemini/antigravity-cli" "$AGY_CONVERSATION_ID" > "$log_file"
+transcript_dir="$HOME/.gemini/antigravity-cli/brain/$AGY_CONVERSATION_ID/.system_generated/logs"
+mkdir -p "$transcript_dir"
+printf '{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"%s"}}]}\\n' "$resumed" >> "$transcript_dir/transcript_full.jsonl"
+printf '%s' "$resumed"
+`
+    );
+    const fakeSupervisor = writeExecutable(
+      'agy-resume-supervisor',
+      `#!/bin/sh
+capture_root=""
+kind="fresh"
+for arg in "$@"; do
+  if [ "$arg" = "--reuse-capture-root" ]; then kind="resumed"; fi
+done
+for arg in "$@"; do printf '%s\\n' "$arg"; done > "$AGY_SUPERVISOR_ARGS_DIR/$kind-args.txt"
+while [ "$1" != "--" ]; do
+  if [ "$1" = "--capture-root" ]; then shift; capture_root="$1"; fi
+  shift
+done
+shift
+mkdir -p "$capture_root/author-home"
+HOME="$capture_root/author-home" exec "$@"
+`
+    );
+    const homesFile = join(tmpRoot, 'resumed-homes.txt');
+    const argsDir = join(tmpRoot, 'resumed-supervisor-args');
+    mkdirSync(argsDir);
+    const policy = join(tmpRoot, 'resume-policy.json');
+    writeFileSync(policy, '{}');
+    const hostHome = join(tmpRoot, 'resumed-host-home');
+    const tokenPath = join(hostHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+    mkdirSync(dirname(tokenPath), { recursive: true });
+    writeFileSync(tokenPath, 'host-token');
+    const options: SendQueryOptions = {
+      env: {
+        AGY_CONVERSATION_ID: conversationId,
+        AGY_HOMES_FILE: homesFile,
+        AGY_SUPERVISOR_ARGS_DIR: argsDir,
+      },
+      assistantConfig: { agyBinaryPath: fakeAgy },
+      nodeConfig: {
+        sandbox: {
+          os: 'bwrap',
+          policy_path: policy,
+          supervisor_bin: fakeSupervisor,
+          fail_closed: true,
+        },
+      },
+    };
+    const previousHome = process.env.HOME;
+    process.env.HOME = hostHome;
+    let captureRoot: string | undefined;
+    try {
+      const first = await collect(
+        new AgyProvider().sendQuery('first', tmpRoot, undefined, options)
+      );
+      const firstResult = first.at(-1);
+      expect(firstResult).toMatchObject({ type: 'result', sessionId: conversationId });
+      if (firstResult?.type !== 'result' || !firstResult.captureRoot) {
+        throw new Error('first call had no capture root');
+      }
+      captureRoot = firstResult.captureRoot;
+      const second = await collect(
+        new AgyProvider().sendQuery('second', tmpRoot, conversationId, options)
+      );
+      expect(second.filter(chunk => chunk.type === 'tool')).toHaveLength(1);
+      expect(second.find(chunk => chunk.type === 'tool')).toMatchObject({
+        toolInput: { CommandLine: 'true' },
+      });
+      expect(second.at(-1)).toMatchObject({
+        type: 'result',
+        sessionId: conversationId,
+        captureRoot,
+      });
+      expect(readFileSync(join(captureRoot, 'author-home', 'resumed-id'), 'utf8')).toBe(
+        conversationId
+      );
+      expect(readFileSync(homesFile, 'utf8').trim().split('\n')).toEqual([
+        join(captureRoot, 'author-home'),
+        join(captureRoot, 'author-home'),
+      ]);
+      expect(readFileSync(join(argsDir, 'fresh-args.txt'), 'utf8').trim().split('\n')).toEqual([
+        'run',
+        '--policy',
+        policy,
+        '--capture-root',
+        captureRoot,
+        '--seed-file',
+        `${tokenPath}:.gemini/antigravity-cli/antigravity-oauth-token`,
+        '--',
+        fakeAgy,
+        '--print',
+        'first',
+        '--log-file',
+        join(captureRoot, 'agy.log'),
+      ]);
+      expect(readFileSync(join(argsDir, 'resumed-args.txt'), 'utf8').trim().split('\n')).toEqual([
+        'run',
+        '--policy',
+        policy,
+        '--capture-root',
+        captureRoot,
+        '--reuse-capture-root',
+        '--',
+        fakeAgy,
+        '--print',
+        'second',
+        '--conversation',
+        conversationId,
+        '--log-file',
+        expect.stringMatching(/^\/tmp\/archon-agy-[^/]+\/agy-[0-9a-f-]+\.log$/),
+      ]);
+    } finally {
+      if (captureRoot) rmSync(captureRoot, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('rejects an expired supervised session rather than starting a cold turn', async () => {
+    const conversationId = 'a55970d4-0e1d-4f02-baa6-061587e90cd4';
+    const fakeAgy = writeExecutable(
+      'agy-expiry',
+      `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--log-file" ]; then shift; printf 'Print mode: conversation=%s, sending message\\n' "$AGY_CONVERSATION_ID" > "$1"; fi
+  shift
+done
+`
+    );
+    const fakeSupervisor = writeExecutable(
+      'agy-expiry-supervisor',
+      '#!/bin/sh\nwhile [ "$1" != "--" ]; do if [ "$1" = "--capture-root" ]; then shift; mkdir -p "$1/author-home"; fi; shift; done\nshift\nexec "$@"\n'
+    );
+    const policy = join(tmpRoot, 'expiry-policy.json');
+    writeFileSync(policy, '{}');
+    const options: SendQueryOptions = {
+      env: { AGY_CONVERSATION_ID: conversationId },
+      assistantConfig: { agyBinaryPath: fakeAgy, transcriptToolEvents: false },
+      nodeConfig: {
+        sandbox: {
+          os: 'bwrap',
+          policy_path: policy,
+          supervisor_bin: fakeSupervisor,
+          fail_closed: true,
+        },
+      },
+    };
+    const first = await collect(new AgyProvider().sendQuery('first', tmpRoot, undefined, options));
+    const result = first.at(-1);
+    if (result?.type !== 'result' || !result.captureRoot) throw new Error('no capture root');
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(result.captureRoot, old, old);
+    await expect(
+      collect(new AgyProvider().sendQuery('second', tmpRoot, conversationId, options))
+    ).rejects.toThrow(/no retained capture root or has expired/);
+    expect(existsSync(result.captureRoot)).toBe(false);
+  });
+
   test('cleans up a transcript-only capture after an unsupervised run', async () => {
     const argsFile = join(tmpRoot, 'unsupervised-transcript-args.txt');
     const fakeAgy = writeExecutable(
@@ -561,7 +739,7 @@ printf "%s" "final answer"
         toolCallId: '1:0',
       },
       { type: 'assistant', content: 'final answer' },
-      { type: 'result' },
+      { type: 'result', sessionId: conversationId },
     ]);
   });
 
@@ -620,7 +798,10 @@ printf "%s" "final answer"
     for await (const chunk of generator) {
       rest.push(chunk);
     }
-    expect(rest).toEqual([{ type: 'assistant', content: 'final answer' }, { type: 'result' }]);
+    expect(rest).toEqual([
+      { type: 'assistant', content: 'final answer' },
+      { type: 'result', sessionId: conversationId },
+    ]);
   });
 });
 

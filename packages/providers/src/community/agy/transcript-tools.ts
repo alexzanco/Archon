@@ -56,11 +56,12 @@ export async function readAgyToolChunksFromLog(logFilePath: string): Promise<Mes
 export async function* tailAgyToolChunksFromLog(
   logFilePath: string,
   donePromise: Promise<unknown>,
-  captureRoot?: string
+  captureRoot?: string,
+  initialOffset = 0
 ): AsyncGenerator<MessageChunk> {
   const parser = new AgyTranscriptToolParser();
   let location: TranscriptLocation | undefined;
-  let offset = 0;
+  let offset = initialOffset;
   let done = false;
 
   donePromise.then(
@@ -187,6 +188,14 @@ function resolveTranscriptLocation(
     conversationId,
     transcriptPath,
   };
+}
+
+export function agyConversationIdFromLog(logText: string): string | undefined {
+  return extractConversationId(logText);
+}
+
+export function agyTranscriptPathFromLog(logText: string, captureRoot: string): string | undefined {
+  return resolveTranscriptLocation(logText, captureRoot)?.transcriptPath;
 }
 
 function isPathBelow(candidate: string, root: string): boolean {

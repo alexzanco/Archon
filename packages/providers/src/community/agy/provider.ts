@@ -1,7 +1,17 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { createLogger } from '@archon/paths';
 
 import type {
@@ -17,7 +27,11 @@ import {
 import { AGY_CAPABILITIES } from './capabilities';
 import { resolveAgyBinaryPath } from './binary-resolver';
 import { parseAgyConfig, type AgyProviderDefaults } from './config';
-import { tailAgyToolChunksFromLog } from './transcript-tools';
+import {
+  agyConversationIdFromLog,
+  agyTranscriptPathFromLog,
+  tailAgyToolChunksFromLog,
+} from './transcript-tools';
 
 interface AgyRunOptions {
   model?: string;
@@ -69,7 +83,15 @@ interface WrappedAgy {
 }
 
 const AGY_CAPTURE_PREFIX = 'archon-agy-';
+const AGY_SESSION_MARKER = 'session.json';
 const DEFAULT_AGY_CAPTURE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const AGY_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface AgySessionMarker {
+  sessionId: string;
+  cwd: string;
+  logFilePath: string;
+}
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
@@ -81,7 +103,7 @@ export class AgyProvider implements IAgentProvider {
   async *sendQuery(
     prompt: string,
     cwd: string,
-    _resumeSessionId?: string,
+    resumeSessionId?: string,
     options?: SendQueryOptions
   ): AsyncGenerator<MessageChunk> {
     const config = parseAgyConfig(options?.assistantConfig ?? {});
@@ -91,14 +113,34 @@ export class AgyProvider implements IAgentProvider {
       options?.outputFormat?.type === 'json_schema'
         ? augmentPromptForJsonSchema(prompt, options.outputFormat.schema)
         : prompt;
-    // A jailed AGY always needs a private capture root: the supervisor makes
-    // its isolated HOME below this directory and the provider owns deletion
-    // only after the tailer has consumed the final transcript bytes.
-    const transcriptCapture =
-      runOptions.transcriptToolEvents || runOptions.supervisor
-        ? createTranscriptCapture()
+    // Each invocation logs its conversation ID. A supervised resume must reuse
+    // the capture root because the supervisor stores AGY's isolated HOME there.
+    const previousCapture =
+      resumeSessionId && runOptions.supervisor
+        ? findSessionCapture(resumeSessionId, cwd)
         : undefined;
-    const args = buildAgyArgs(runOptions, finalPrompt, transcriptCapture?.logFilePath);
+    const transcriptCapture = previousCapture
+      ? {
+          directory: previousCapture.directory,
+          logFilePath: join(previousCapture.directory, `agy-${randomUUID()}.log`),
+        }
+      : createTranscriptCapture();
+    const previousTranscriptPath = previousCapture
+      ? agyTranscriptPathFromLog(
+          readFileSync(previousCapture.marker.logFilePath, 'utf8'),
+          previousCapture.directory
+        )
+      : undefined;
+    const initialTranscriptOffset =
+      previousTranscriptPath && existsSync(previousTranscriptPath)
+        ? readFileSync(previousTranscriptPath, 'utf8').length
+        : 0;
+    const args = buildAgyArgs(
+      runOptions,
+      finalPrompt,
+      transcriptCapture.logFilePath,
+      resumeSessionId
+    );
     let retainTranscriptCapture = false;
 
     try {
@@ -115,16 +157,20 @@ export class AgyProvider implements IAgentProvider {
         args,
         cwd,
         options,
-        runOptions.supervisor,
-        transcriptCapture?.directory
+        previousCapture && runOptions.supervisor
+          ? { ...runOptions.supervisor, failClosed: true }
+          : runOptions.supervisor,
+        transcriptCapture.directory,
+        previousCapture !== undefined
       );
-      retainTranscriptCapture = run.usesSupervisor;
+      retainTranscriptCapture = run.usesSupervisor || previousCapture !== undefined;
       if (transcriptCapture && runOptions.transcriptToolEvents) {
         try {
           for await (const chunk of tailAgyToolChunksFromLog(
             transcriptCapture.logFilePath,
             run.done,
-            runOptions.supervisor ? transcriptCapture.directory : undefined
+            runOptions.supervisor ? transcriptCapture.directory : undefined,
+            initialTranscriptOffset
           )) {
             yield chunk;
           }
@@ -145,6 +191,22 @@ export class AgyProvider implements IAgentProvider {
         throw new Error(formatAgyAuthError());
       }
 
+      const logText = existsSync(transcriptCapture.logFilePath)
+        ? readFileSync(transcriptCapture.logFilePath, 'utf8')
+        : '';
+      const reportedSessionId = agyConversationIdFromLog(logText);
+      if (resumeSessionId && reportedSessionId && reportedSessionId !== resumeSessionId) {
+        throw new Error(`AGY resumed a different conversation than ${resumeSessionId}`);
+      }
+      const sessionId = reportedSessionId ?? resumeSessionId;
+      if (run.usesSupervisor && sessionId) {
+        writeSessionMarker(transcriptCapture.directory, {
+          sessionId,
+          cwd,
+          logFilePath: transcriptCapture.logFilePath,
+        });
+      }
+
       const content = result.stdout.trim();
       if (content.length > 0) {
         yield { type: 'assistant', content };
@@ -152,6 +214,7 @@ export class AgyProvider implements IAgentProvider {
 
       const resultChunk: MessageChunk = {
         type: 'result',
+        ...(sessionId ? { sessionId } : {}),
         ...(retainTranscriptCapture && transcriptCapture
           ? { captureRoot: transcriptCapture.directory }
           : {}),
@@ -166,9 +229,9 @@ export class AgyProvider implements IAgentProvider {
       }
       yield resultChunk;
     } finally {
-      if (transcriptCapture && !retainTranscriptCapture) {
+      if (!retainTranscriptCapture) {
         rmSync(transcriptCapture.directory, { recursive: true, force: true });
-      } else if (transcriptCapture) {
+      } else {
         getLog().info({ captureRoot: transcriptCapture.directory }, 'agy.capture_retained');
       }
     }
@@ -249,9 +312,12 @@ function resolveRunOptions(
 function buildAgyArgs(
   options: AgyRunOptions,
   prompt: string,
-  logFilePath: string | undefined
+  logFilePath: string,
+  resumeSessionId?: string
 ): string[] {
   const args = ['--print', prompt];
+
+  if (resumeSessionId) args.push('--conversation', resumeSessionId);
 
   if (options.model) {
     args.push('--model', options.model);
@@ -269,9 +335,7 @@ function buildAgyArgs(
     args.push('--dangerously-skip-permissions');
   }
 
-  if (logFilePath) {
-    args.push('--log-file', logFilePath);
-  }
+  args.push('--log-file', logFilePath);
 
   for (const directory of options.additionalDirectories) {
     args.push('--add-dir', directory);
@@ -286,7 +350,8 @@ function startAgyPrint(
   cwd: string,
   options: SendQueryOptions | undefined,
   supervisor: SupervisorSpec | undefined,
-  captureRoot: string | undefined
+  captureRoot: string,
+  reuseCaptureRoot: boolean
 ): RunningAgyPrint {
   const abortSignal = options?.abortSignal;
   if (abortSignal?.aborted) {
@@ -294,7 +359,14 @@ function startAgyPrint(
   }
 
   const environment = buildAgyEnv(options?.env);
-  const wrapped = wrapWithSupervisor(binaryPath, args, environment, supervisor, captureRoot);
+  const wrapped = wrapWithSupervisor(
+    binaryPath,
+    args,
+    environment,
+    supervisor,
+    captureRoot,
+    reuseCaptureRoot
+  );
   const child = spawn(wrapped.command, wrapped.args, {
     cwd,
     env: wrapped.env,
@@ -369,12 +441,10 @@ function wrapWithSupervisor(
   agyArgs: string[],
   environment: Record<string, string>,
   spec: SupervisorSpec | undefined,
-  captureRoot: string | undefined
+  captureRoot: string,
+  reuseCaptureRoot: boolean
 ): WrappedAgy {
   if (!spec) return { command: binaryPath, args: agyArgs, env: environment, usesSupervisor: false };
-  if (!captureRoot) {
-    throw new OsJailUnavailableError('OS-jailed AGY requires a private capture root');
-  }
   const supervisorPath = resolveSupervisorBinary(spec.supervisorBin);
   if (!supervisorPath) {
     // A fail_closed node must never silently run unconfined when its enforcement
@@ -391,7 +461,7 @@ function wrapWithSupervisor(
     ? join(process.env.HOME, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
     : undefined;
   const seedArgs =
-    tokenPath && existsSync(tokenPath)
+    !reuseCaptureRoot && tokenPath && existsSync(tokenPath)
       ? ['--seed-file', `${tokenPath}:.gemini/antigravity-cli/antigravity-oauth-token`]
       : [];
   // The trusted stage CLI owns policy construction.  Keep Archon as a router:
@@ -404,6 +474,7 @@ function wrapWithSupervisor(
       spec.policyPath,
       '--capture-root',
       captureRoot,
+      ...(reuseCaptureRoot ? ['--reuse-capture-root'] : []),
       ...seedArgs,
       '--',
       binaryPath,
@@ -418,6 +489,58 @@ function createTranscriptCapture(): AgyTranscriptCapture {
   pruneExpiredTranscriptCaptures();
   const directory = mkdtempSync(join(tmpdir(), AGY_CAPTURE_PREFIX));
   return { directory, logFilePath: join(directory, 'agy.log') };
+}
+
+function findSessionCapture(
+  sessionId: string,
+  cwd: string
+): { directory: string; marker: AgySessionMarker } {
+  if (!AGY_CONVERSATION_ID.test(sessionId)) {
+    throw new Error(`Invalid AGY conversation ID: ${sessionId}`);
+  }
+  pruneExpiredTranscriptCaptures();
+  for (const entry of readdirSync(tmpdir(), { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(AGY_CAPTURE_PREFIX)) continue;
+    const directory = join(tmpdir(), entry.name);
+    const markerPath = join(directory, AGY_SESSION_MARKER);
+    if (!existsSync(markerPath)) continue;
+    try {
+      const marker: unknown = JSON.parse(readFileSync(markerPath, 'utf8'));
+      if (!isAgySessionMarker(marker) || marker.sessionId !== sessionId) continue;
+      if (marker.cwd !== cwd) {
+        throw new Error(`AGY conversation ${sessionId} belongs to a different working directory`);
+      }
+      if (
+        dirname(marker.logFilePath) !== directory ||
+        !existsSync(join(directory, 'author-home')) ||
+        !existsSync(marker.logFilePath)
+      ) {
+        throw new Error(`AGY conversation ${sessionId} has no reusable isolated HOME`);
+      }
+      return { directory, marker };
+    } catch (error) {
+      if (error instanceof SyntaxError) continue;
+      throw error;
+    }
+  }
+  throw new Error(`AGY conversation ${sessionId} has no retained capture root or has expired`);
+}
+
+function isAgySessionMarker(value: unknown): value is AgySessionMarker {
+  if (!value || typeof value !== 'object') return false;
+  const marker = value as Record<string, unknown>;
+  return (
+    typeof marker.sessionId === 'string' &&
+    typeof marker.cwd === 'string' &&
+    typeof marker.logFilePath === 'string'
+  );
+}
+
+function writeSessionMarker(directory: string, marker: AgySessionMarker): void {
+  writeFileSync(join(directory, AGY_SESSION_MARKER), JSON.stringify(marker), { mode: 0o600 });
+  // Pruning uses capture-root mtime, so a resumed turn extends its lifetime.
+  const now = new Date();
+  utimesSync(directory, now, now);
 }
 
 function pruneExpiredTranscriptCaptures(now = Date.now()): void {
